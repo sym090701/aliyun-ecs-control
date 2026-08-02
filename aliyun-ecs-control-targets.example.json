@@ -1,0 +1,50 @@
+{
+  "accounts": [
+    {
+      "id": "cn",
+      "name": "阿里云内地",
+      "access_key_id": "REPLACE_WITH_NEW_KEY",
+      "access_key_secret": "REPLACE_WITH_NEW_SECRET"
+    },
+    {
+      "id": "intl",
+      "name": "阿里云国际",
+      "access_key_id": "REPLACE_WITH_NEW_KEY",
+      "access_key_secret": "REPLACE_WITH_NEW_SECRET"
+    }
+  ],
+  "instances": [
+    {
+      "id": "cn-beijing-1",
+      "name": "北京主机",
+      "account": "cn",
+      "region": "cn-beijing",
+      "instance_id": "i-xxxxxxxxxxxxxxxxxxxx",
+      "traffic_threshold_gb": 18,
+      "auto_enabled_default": false,
+      "schedule": {
+        "enabled": false,
+        "start": "08:00",
+        "stop": "23:00",
+        "weekdays": [0, 1, 2, 3, 4],
+        "timezone": "Asia/Shanghai"
+      }
+    },
+    {
+      "id": "intl-hk-1",
+      "name": "香港主机",
+      "account": "intl",
+      "region": "cn-hongkong",
+      "instance_id": "i-yyyyyyyyyyyyyyyyyyyy",
+      "traffic_threshold_gb": 180,
+      "auto_enabled_default": false,
+      "schedule": {
+        "enabled": false,
+        "start": "09:15",
+        "stop": "22:30",
+        "weekdays": [0, 1, 2, 3, 4, 5, 6],
+        "timezone": "Asia/Hong_Kong"
+      }
+    }
+  ]
+}

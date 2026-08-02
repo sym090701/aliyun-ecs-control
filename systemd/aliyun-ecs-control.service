@@ -1,0 +1,30 @@
+[Unit]
+Description=Alibaba Cloud ECS authenticated control panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aliyun-ecs-control
+Group=aliyun-ecs-control
+EnvironmentFile=/etc/aliyun-ecs-control.env
+ExecStart=/opt/aliyun-ecs-control/.venv/bin/aliyun-ecs-control serve
+Restart=on-failure
+RestartSec=5s
+StateDirectory=aliyun-ecs-control
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

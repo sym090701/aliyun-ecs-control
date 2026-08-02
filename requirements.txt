@@ -1,0 +1,4 @@
+aliyun-python-sdk-core>=2.16.0,<3
+aliyun-python-sdk-ecs>=4.24.0,<5
+pyotp>=2.9.0,<3
+backports.zoneinfo>=0.2.1,<1; python_version < "3.9"

@@ -1,0 +1,25 @@
+[Unit]
+Description=Apply Alibaba Cloud ECS schedules and traffic policies
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aliyun-ecs-control
+Group=aliyun-ecs-control
+EnvironmentFile=/etc/aliyun-ecs-control.env
+ExecStart=/opt/aliyun-ecs-control/.venv/bin/aliyun-ecs-control check
+StateDirectory=aliyun-ecs-control
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6

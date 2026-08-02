@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>ECS Fleet Control</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main id="login-view" class="login-shell" hidden>
+    <form id="login-form" class="login-panel" autocomplete="off">
+      <div class="brand-mark" aria-hidden="true">EC</div>
+      <h1>ECS Fleet</h1>
+      <p>阿里云实例控制台</p>
+      <label for="token">控制令牌</label>
+      <input id="token" name="token" type="password" minlength="24" required autofocus>
+      <div id="totp-field" hidden>
+        <label for="totp">动态验证码</label>
+        <input id="totp" name="totp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code">
+      </div>
+      <button class="button primary wide" type="submit">登录</button>
+      <div id="login-error" class="form-error" role="alert"></div>
+    </form>
+  </main>
+
+  <main id="dashboard-view" class="app-shell" hidden>
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand-mark small" aria-hidden="true">EC</div>
+        <div>
+          <h1>ECS Fleet</h1>
+          <p id="fleet-meta">正在连接</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="refresh-button" class="button quiet" type="button">刷新</button>
+        <button id="logout-button" class="button quiet" type="button">退出</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" role="status" hidden></div>
+
+    <section class="fleet-layout">
+      <aside class="fleet-panel" aria-labelledby="fleet-heading">
+        <div class="fleet-heading">
+          <div>
+            <p class="section-label">全部资源</p>
+            <h2 id="fleet-heading">实例</h2>
+          </div>
+          <span id="fleet-count">0</span>
+        </div>
+        <div id="target-list" class="target-list"></div>
+      </aside>
+
+      <section class="target-detail" aria-live="polite">
+        <div class="target-header">
+          <div>
+            <p id="target-account" class="section-label">--</p>
+            <h2 id="target-name">请选择实例</h2>
+            <p id="target-meta">--</p>
+          </div>
+          <div class="target-status">
+            <span id="status-dot" class="status-dot unknown" aria-hidden="true"></span>
+            <strong id="status-heading">未知</strong>
+          </div>
+        </div>
+
+        <section class="traffic-band" aria-labelledby="traffic-heading">
+          <div>
+            <p class="section-label">CDT 汇总流量</p>
+            <h3 id="traffic-heading">--</h3>
+            <p id="traffic-error" class="traffic-error" hidden></p>
+          </div>
+          <div class="traffic-meter">
+            <div class="traffic-copy">
+              <span id="traffic-threshold">阈值 --</span>
+              <span id="traffic-percent">--</span>
+            </div>
+            <div class="progress-track" aria-label="流量阈值使用比例">
+              <div id="traffic-progress" class="progress-value"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-grid">
+          <article class="control-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-label">手动控制</p>
+                <h3>电源操作</h3>
+              </div>
+              <span id="operation-state" class="operation-state">就绪</span>
+            </div>
+            <div class="power-actions">
+              <button id="start-button" class="power-button start" type="button">
+                <span class="power-symbol" aria-hidden="true"></span>
+                <span>启动实例</span>
+              </button>
+              <button id="stop-button" class="power-button stop" type="button">
+                <span class="stop-symbol" aria-hidden="true"></span>
+                <span>停止实例</span>
+              </button>
+            </div>
+          </article>
+
+          <article class="policy-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-label">自动策略</p>
+                <h3>流量守护</h3>
+              </div>
+              <label class="switch" aria-label="启用自动策略">
+                <input id="auto-toggle" type="checkbox">
+                <span class="switch-track"></span>
+              </label>
+            </div>
+            <dl class="policy-list">
+              <div><dt>低于阈值</dt><dd>保持运行</dd></div>
+              <div><dt>达到阈值</dt><dd>正常停止</dd></div>
+              <div><dt>最近检查</dt><dd id="last-check">从未</dd></div>
+            </dl>
+            <button id="check-button" class="button secondary wide" type="button">立即检查</button>
+          </article>
+        </section>
+
+        <form id="schedule-form" class="schedule-panel" aria-labelledby="schedule-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="section-label">定时电源</p>
+              <h3 id="schedule-heading">开关机计划</h3>
+            </div>
+            <label class="switch" aria-label="启用定时开关机">
+              <input id="schedule-toggle" type="checkbox">
+              <span class="switch-track"></span>
+            </label>
+          </div>
+
+          <div class="schedule-fields">
+            <label>
+              <span>启动时间</span>
+              <input id="schedule-start" type="time" required>
+            </label>
+            <label>
+              <span>停止时间</span>
+              <input id="schedule-stop" type="time" required>
+            </label>
+            <label>
+              <span>时区</span>
+              <input id="schedule-timezone" type="text" list="timezone-options" maxlength="64" required>
+            </label>
+          </div>
+
+          <fieldset class="weekday-fieldset">
+            <legend>执行日期</legend>
+            <div class="weekday-options">
+              <label><input type="checkbox" name="schedule-weekday" value="0"><span>周一</span></label>
+              <label><input type="checkbox" name="schedule-weekday" value="1"><span>周二</span></label>
+              <label><input type="checkbox" name="schedule-weekday" value="2"><span>周三</span></label>
+              <label><input type="checkbox" name="schedule-weekday" value="3"><span>周四</span></label>
+              <label><input type="checkbox" name="schedule-weekday" value="4"><span>周五</span></label>
+              <label><input type="checkbox" name="schedule-weekday" value="5"><span>周六</span></label>
+              <label><input type="checkbox" name="schedule-weekday" value="6"><span>周日</span></label>
+            </div>
+          </fieldset>
+
+          <div class="schedule-footer">
+            <div>
+              <span>下次执行</span>
+              <strong id="schedule-next">计划未启用</strong>
+            </div>
+            <button id="schedule-save" class="button primary" type="submit">保存计划</button>
+          </div>
+        </form>
+
+        <datalist id="timezone-options">
+          <option value="Asia/Shanghai"></option>
+          <option value="Asia/Hong_Kong"></option>
+          <option value="Asia/Singapore"></option>
+          <option value="Asia/Tokyo"></option>
+          <option value="Europe/London"></option>
+          <option value="America/Los_Angeles"></option>
+          <option value="UTC"></option>
+        </datalist>
+
+        <section class="activity" aria-labelledby="activity-heading">
+          <div>
+            <p class="section-label">最近活动</p>
+            <h3 id="activity-heading">策略记录</h3>
+          </div>
+          <div class="activity-row">
+            <span id="last-action">暂无操作</span>
+            <time id="last-action-time"></time>
+          </div>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="stop-dialog" class="confirm-dialog">
+    <form method="dialog">
+      <h2>停止 <span id="stop-target-name">ECS 实例</span>？</h2>
+      <p>系统将提交正常关机请求，实例上的服务会中断。</p>
+      <div class="dialog-actions">
+        <button class="button quiet" value="cancel">取消</button>
+        <button id="confirm-stop" class="button danger" value="confirm">确认停止</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

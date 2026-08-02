@@ -1,0 +1,16 @@
+# Replace control.example.com with a DNS name pointing to this control host.
+# Caddy obtains and renews the TLS certificate automatically.
+control.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8787 {
+        # Overwrite the client-supplied value used by login rate limiting.
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto https
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+    }
+}

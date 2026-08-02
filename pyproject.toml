@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aliyun-ecs-control"
+version = "2.1.0"
+description = "Authenticated multi-account control, schedules, and traffic policy for Alibaba Cloud ECS"
+requires-python = ">=3.8"
+dependencies = [
+  "aliyun-python-sdk-core>=2.16.0,<3",
+  "aliyun-python-sdk-ecs>=4.24.0,<5",
+  "pyotp>=2.9.0,<3",
+  "backports.zoneinfo>=0.2.1,<1; python_version < '3.9'",
+]
+
+[project.scripts]
+aliyun-ecs-control = "aliyun_control.cli:main"
+
+[tool.setuptools]
+packages = ["aliyun_control"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+aliyun_control = ["static/*"]
+
+[tool.setuptools.exclude-package-data]
+aliyun_control = ["__pycache__/*", "*.pyc"]
