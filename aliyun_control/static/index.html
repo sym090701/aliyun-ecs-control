@@ -72,6 +72,14 @@
             <p class="section-label">CDT 汇总流量</p>
             <h3 id="traffic-heading">--</h3>
             <p id="traffic-error" class="traffic-error" hidden></p>
+            <form id="threshold-form" class="threshold-form">
+              <label for="threshold-input">阈值</label>
+              <div class="threshold-input-row">
+                <input id="threshold-input" type="number" min="0.01" step="0.01" inputmode="decimal" required>
+                <span>GB</span>
+                <button id="threshold-save" class="button quiet" type="submit">保存</button>
+              </div>
+            </form>
           </div>
           <div class="traffic-meter">
             <div class="traffic-copy">

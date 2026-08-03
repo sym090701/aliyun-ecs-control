@@ -315,6 +315,14 @@ def create_handler(config: Config, fleet: ControlFleet):
                         timezone_name=body.get("timezone"),
                     )
                 )
+            elif action == "threshold":
+                self._handle(
+                    lambda: fleet.set_threshold(
+                        target_id,
+                        body.get("threshold_gb"),
+                        actor=self._client_ip(),
+                    )
+                )
             elif action == "check":
                 self._handle(lambda: controller.check_automation(force_traffic=True))
             else:

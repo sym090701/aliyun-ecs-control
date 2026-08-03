@@ -89,6 +89,10 @@ class FakeFleet:
         self.last_management_call = ("update_target", target_id, dict(body))
         return {"id": target_id}
 
+    def set_threshold(self, target_id, value, actor=""):
+        self.last_management_call = ("set_threshold", target_id, value, actor)
+        return {"target_id": target_id, "threshold_gb": float(value)}
+
     def delete_target(self, target_id, actor=""):
         self.last_management_call = ("delete_target", target_id)
         return {"id": target_id, "deleted": True}
@@ -279,6 +283,18 @@ class ServerTests(unittest.TestCase):
             "POST", "/api/targets/cn-one/auto", {"enabled": "false"}, self.write_headers(cookie)
         )
         self.assertEqual(status, 400)
+
+    def test_threshold_route_updates_selected_target(self):
+        cookie = self.login_cookie()
+        status, data, _ = self.request(
+            "POST",
+            "/api/targets/intl-one/threshold",
+            {"threshold_gb": 215.5},
+            self.write_headers(cookie),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["data"], {"target_id": "intl-one", "threshold_gb": 215.5})
+        self.assertEqual(self.fleet.last_management_call[:3], ("set_threshold", "intl-one", 215.5))
 
     def test_stop_requires_confirmation(self):
         cookie = self.login_cookie()

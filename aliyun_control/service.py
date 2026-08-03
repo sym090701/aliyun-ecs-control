@@ -730,6 +730,17 @@ class ControlFleet:
         with self._mutation_lock:
             return self._update_target(target_id, payload, actor)
 
+    def set_threshold(self, target_id: str, value: object, actor: str = "") -> Dict[str, Any]:
+        with self._mutation_lock:
+            accounts, targets = self._snapshot()
+            current = targets.get(target_id)
+            if current is None:
+                raise KeyError(f"Unknown target: {target_id}")
+            target = self._target_from_payload({"traffic_threshold_gb": value}, current=current)
+            targets[target_id] = target
+            self._commit(accounts, targets, "traffic_threshold_updated", target_id, actor)
+            return {"target_id": target_id, "threshold_gb": target.traffic_threshold_gb}
+
     def _update_target(self, target_id: str, payload: Dict[str, Any], actor: str) -> Dict[str, Any]:
         accounts, targets = self._snapshot()
         current = targets.get(target_id)

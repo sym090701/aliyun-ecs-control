@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aliyun-ecs-control"
-version = "2.2.0"
+version = "2.2.1"
 description = "Authenticated multi-account control, schedules, and traffic policy for Alibaba Cloud ECS"
 requires-python = ">=3.8"
 dependencies = [
