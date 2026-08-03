@@ -84,7 +84,7 @@ def create_handler(config: Config, fleet: ControlFleet):
     totp = pyotp.TOTP(config.totp_secret) if config.totp_secret else None
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "ECSControl/2.1"
+        server_version = "ECSControl/2.2"
 
         def log_message(self, fmt: str, *args: Any) -> None:
             LOG.info("%s - %s", self._client_ip(), fmt % args)
@@ -106,8 +106,8 @@ def create_handler(config: Config, fleet: ControlFleet):
 
         def _json_body(self) -> Dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))
-            if length > 16_384:
-                raise ValueError("Request body is too large")
+            if not 0 <= length <= 16_384:
+                raise ValueError("Request body length is invalid")
             if length == 0:
                 return {}
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -188,10 +188,32 @@ def create_handler(config: Config, fleet: ControlFleet):
                 return False
             return True
 
+        def _require_step_up(self, body: Dict[str, Any]) -> bool:
+            if totp is None:
+                self._send_json(
+                    HTTPStatus.FORBIDDEN,
+                    {"ok": False, "error": "TOTP must be configured for account and instance management"},
+                )
+                return False
+            if not self._totp_valid(body.get("totp")):
+                self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "A current TOTP code is required"})
+                return False
+            body.pop("totp", None)
+            return True
+
         def _target_route(self, path: str):
             parts = [unquote(item) for item in path.strip("/").split("/")]
             if len(parts) == 4 and parts[:2] == ["api", "targets"]:
                 return parts[2], parts[3]
+            return None
+
+        @staticmethod
+        def _resource_route(path: str):
+            parts = [unquote(item) for item in path.strip("/").split("/")]
+            if len(parts) == 2 and parts[0] == "api" and parts[1] in {"accounts", "instances"}:
+                return parts[1], None
+            if len(parts) == 3 and parts[0] == "api" and parts[1] in {"accounts", "instances"}:
+                return parts[1], parts[2]
             return None
 
         def do_GET(self) -> None:
@@ -210,6 +232,9 @@ def create_handler(config: Config, fleet: ControlFleet):
             elif path == "/api/overview":
                 if self._require_auth():
                     self._handle(fleet.overview)
+            elif path == "/api/configuration":
+                if self._require_auth():
+                    self._handle(fleet.configuration)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -230,6 +255,26 @@ def create_handler(config: Config, fleet: ControlFleet):
                 self._send_json(HTTPStatus.OK, {"ok": True}, cookie=cookie)
                 return
             if not self._require_auth(write=True):
+                return
+
+            resource_route = self._resource_route(path)
+            if path == "/api/credentials/test":
+                if self._require_step_up(body):
+                    self._handle(lambda: fleet.test_credentials(body))
+                return
+            if resource_route is not None:
+                if not self._require_step_up(body):
+                    return
+                resource, resource_id = resource_route
+                actor = self._client_ip()
+                if resource == "accounts" and resource_id is None:
+                    self._handle(lambda: fleet.add_account(body, actor=actor))
+                elif resource == "accounts":
+                    self._handle(lambda: fleet.update_account(resource_id, body, actor=actor))
+                elif resource == "instances" and resource_id is None:
+                    self._handle(lambda: fleet.add_target(body, actor=actor))
+                else:
+                    self._handle(lambda: fleet.update_target(resource_id, body, actor=actor))
                 return
 
             route = self._target_route(path)
@@ -271,9 +316,29 @@ def create_handler(config: Config, fleet: ControlFleet):
                     )
                 )
             elif action == "check":
-                self._handle(lambda: controller.check_policy(force=True))
+                self._handle(lambda: controller.check_automation(force_traffic=True))
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
+
+        def do_DELETE(self) -> None:
+            path = urlparse(self.path).path
+            try:
+                body = self._json_body()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
+            if not self._require_auth(write=True) or not self._require_step_up(body):
+                return
+            route = self._resource_route(path)
+            if route is None or route[1] is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            resource, resource_id = route
+            actor = self._client_ip()
+            if resource == "accounts":
+                self._handle(lambda: fleet.delete_account(resource_id, actor=actor))
+            else:
+                self._handle(lambda: fleet.delete_target(resource_id, actor=actor))
 
         def _login(self, body: Dict[str, Any]) -> None:
             address = self._client_ip()
@@ -297,6 +362,8 @@ def create_handler(config: Config, fleet: ControlFleet):
                 self._send_json(HTTPStatus.OK, {"ok": True, "data": action()})
             except ValueError as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            except KeyError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": str(exc)})
             except Exception as exc:
                 LOG.exception("Request failed")
                 self._send_json(HTTPStatus.BAD_GATEWAY, {"ok": False, "error": str(exc)})

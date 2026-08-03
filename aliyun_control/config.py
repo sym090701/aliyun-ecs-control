@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from threading import RLock
+from typing import Any, Dict, List, Optional, Tuple
+
+from cryptography.fernet import Fernet, InvalidToken
 
 try:
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -121,6 +125,9 @@ class Config:
     cookie_secure: bool
     trust_proxy: bool
     session_hours: int
+    managed_config_path: Optional[Path] = None
+    credential_key_path: Optional[Path] = None
+    audit_path: Optional[Path] = None
 
     @classmethod
     def from_env(cls, require_web_token: bool = True) -> "Config":
@@ -129,7 +136,16 @@ class Config:
             raise ValueError("CONTROL_TOKEN must contain at least 24 characters")
 
         targets_file = Path(os.getenv("TARGETS_FILE", "/etc/aliyun-ecs-control-targets.json"))
-        accounts, targets = load_targets_file(targets_file)
+        managed_config_path = Path(
+            os.getenv("MANAGED_CONFIG_PATH", "/var/lib/aliyun-ecs-control/config.json")
+        )
+        credential_key_path = Path(
+            os.getenv("CREDENTIAL_KEY_PATH", "/etc/aliyun-ecs-control.key")
+        )
+        if managed_config_path.exists():
+            accounts, targets = load_managed_config(managed_config_path, credential_key_path)
+        else:
+            accounts, targets = load_targets_file(targets_file)
         port = int(os.getenv("LISTEN_PORT", "8787"))
         if not 1 <= port <= 65535:
             raise ValueError("LISTEN_PORT must be between 1 and 65535")
@@ -149,6 +165,9 @@ class Config:
             cookie_secure=_bool_env("COOKIE_SECURE", False),
             trust_proxy=_bool_env("TRUST_PROXY", False),
             session_hours=session_hours,
+            managed_config_path=managed_config_path,
+            credential_key_path=credential_key_path,
+            audit_path=Path(os.getenv("AUDIT_PATH", "/var/lib/aliyun-ecs-control/audit.log")),
         )
 
 
@@ -195,7 +214,7 @@ def load_targets_file(path: Path) -> tuple[Dict[str, AccountConfig], Dict[str, T
         if account_id not in accounts:
             raise ValueError(f"Instance {target_id} references unknown account {account_id}")
         threshold = float(item.get("traffic_threshold_gb", 180))
-        if threshold <= 0:
+        if not math.isfinite(threshold) or threshold <= 0:
             raise ValueError(f"Instance {target_id} traffic_threshold_gb must be greater than zero")
         auto_enabled_default = item.get("auto_enabled_default", False)
         raw_schedule = item.get("schedule", {})
@@ -223,8 +242,6 @@ def load_targets_file(path: Path) -> tuple[Dict[str, AccountConfig], Dict[str, T
             raw_schedule.get("timezone", "Asia/Shanghai"),
             f"instances[{index}].schedule.timezone",
         )
-        if auto_enabled_default is True and schedule_enabled:
-            raise ValueError(f"Instance {target_id} cannot enable traffic policy and schedule together")
         targets[target_id] = TargetConfig(
             id=target_id,
             name=_nonempty(item.get("name"), f"instances[{index}].name"),
@@ -258,3 +275,179 @@ def write_targets_file(path: Path, accounts: List[dict], instances: List[dict]) 
         handle.write("\n")
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
+
+
+def _parse_payload(payload: object, *, allow_empty: bool = False) -> tuple[Dict[str, AccountConfig], Dict[str, TargetConfig]]:
+    if not isinstance(payload, dict):
+        raise ValueError("Targets file root must be a JSON object")
+    raw_accounts = payload.get("accounts", [])
+    raw_targets = payload.get("instances", [])
+    if not isinstance(raw_accounts, list) or (not raw_accounts and not allow_empty):
+        raise ValueError("Targets file must contain a non-empty accounts array")
+    if not isinstance(raw_targets, list) or (not raw_targets and not allow_empty):
+        raise ValueError("Targets file must contain a non-empty instances array")
+
+    accounts: Dict[str, AccountConfig] = {}
+    for index, item in enumerate(raw_accounts):
+        if not isinstance(item, dict):
+            raise ValueError(f"accounts[{index}] must be an object")
+        account_id = _identifier(item.get("id"), f"accounts[{index}].id")
+        if account_id in accounts:
+            raise ValueError(f"Duplicate account id: {account_id}")
+        access_key_id = _nonempty(item.get("access_key_id"), f"accounts[{index}].access_key_id")
+        access_key_secret = _nonempty(item.get("access_key_secret"), f"accounts[{index}].access_key_secret")
+        if not 1 <= len(access_key_id) <= 128:
+            raise ValueError(f"accounts[{index}].access_key_id length is invalid")
+        if not 1 <= len(access_key_secret) <= 256:
+            raise ValueError(f"accounts[{index}].access_key_secret length is invalid")
+        accounts[account_id] = AccountConfig(
+            id=account_id,
+            name=_nonempty(item.get("name"), f"accounts[{index}].name"),
+            access_key_id=access_key_id,
+            access_key_secret=access_key_secret,
+        )
+
+    targets: Dict[str, TargetConfig] = {}
+    for index, item in enumerate(raw_targets):
+        if not isinstance(item, dict):
+            raise ValueError(f"instances[{index}] must be an object")
+        target_id = _identifier(item.get("id"), f"instances[{index}].id")
+        if target_id in targets:
+            raise ValueError(f"Duplicate instance id: {target_id}")
+        account_id = _identifier(item.get("account"), f"instances[{index}].account")
+        if account_id not in accounts:
+            raise ValueError(f"Instance {target_id} references unknown account {account_id}")
+        threshold = float(item.get("traffic_threshold_gb", 180))
+        if not math.isfinite(threshold) or threshold <= 0:
+            raise ValueError(f"Instance {target_id} traffic_threshold_gb must be greater than zero")
+        auto_enabled_default = _boolean(item.get("auto_enabled_default", False), f"instances[{index}].auto_enabled_default")
+        raw_schedule = item.get("schedule", {})
+        if not isinstance(raw_schedule, dict):
+            raise ValueError(f"instances[{index}].schedule must be an object")
+        schedule_enabled = _boolean(raw_schedule.get("enabled", False), f"instances[{index}].schedule.enabled")
+        schedule_start = _time_value(raw_schedule.get("start", "08:00"), f"instances[{index}].schedule.start")
+        schedule_stop = _time_value(raw_schedule.get("stop", "23:00"), f"instances[{index}].schedule.stop")
+        if schedule_start == schedule_stop:
+            raise ValueError(f"Instance {target_id} schedule start and stop times must differ")
+        schedule_weekdays = _weekdays(raw_schedule.get("weekdays", [0, 1, 2, 3, 4, 5, 6]), f"instances[{index}].schedule.weekdays")
+        schedule_timezone = _timezone_value(raw_schedule.get("timezone", "Asia/Shanghai"), f"instances[{index}].schedule.timezone")
+        targets[target_id] = TargetConfig(
+            id=target_id,
+            name=_nonempty(item.get("name"), f"instances[{index}].name"),
+            account_id=account_id,
+            region_id=_nonempty(item.get("region"), f"instances[{index}].region"),
+            instance_id=_nonempty(item.get("instance_id"), f"instances[{index}].instance_id"),
+            traffic_threshold_gb=threshold,
+            auto_enabled_default=auto_enabled_default,
+            schedule_enabled_default=schedule_enabled,
+            schedule_start_default=schedule_start,
+            schedule_stop_default=schedule_stop,
+            schedule_weekdays_default=schedule_weekdays,
+            schedule_timezone_default=schedule_timezone,
+        )
+    return accounts, targets
+
+
+def _account_payload(account: AccountConfig, cipher: Fernet) -> Dict[str, str]:
+    return {
+        "id": account.id,
+        "name": account.name,
+        "access_key_id": cipher.encrypt(account.access_key_id.encode("utf-8")).decode("ascii"),
+        "access_key_secret": cipher.encrypt(account.access_key_secret.encode("utf-8")).decode("ascii"),
+    }
+
+
+def _target_payload(target: TargetConfig) -> Dict[str, Any]:
+    return {
+        "id": target.id,
+        "name": target.name,
+        "account": target.account_id,
+        "region": target.region_id,
+        "instance_id": target.instance_id,
+        "traffic_threshold_gb": target.traffic_threshold_gb,
+        "auto_enabled_default": target.auto_enabled_default,
+        "schedule": {
+            "enabled": target.schedule_enabled_default,
+            "start": target.schedule_start_default,
+            "stop": target.schedule_stop_default,
+            "weekdays": list(target.schedule_weekdays_default),
+            "timezone": target.schedule_timezone_default,
+        },
+    }
+
+
+def _load_fernet(path: Path) -> Fernet:
+    try:
+        key = path.read_bytes().strip()
+        return Fernet(key)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Could not read credential key {path}: {exc}") from exc
+
+
+def load_managed_config(path: Path, key_path: Path) -> tuple[Dict[str, AccountConfig], Dict[str, TargetConfig]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("managed configuration root must be an object")
+        cipher = _load_fernet(key_path)
+        decoded_accounts = []
+        for item in payload.get("accounts", []):
+            item = dict(item)
+            for field in ("access_key_id", "access_key_secret"):
+                item[field] = cipher.decrypt(str(item[field]).encode("ascii")).decode("utf-8")
+            decoded_accounts.append(item)
+        return _parse_payload({"accounts": decoded_accounts, "instances": payload.get("instances", [])}, allow_empty=True)
+    except (OSError, json.JSONDecodeError, KeyError, InvalidToken, UnicodeDecodeError, TypeError, ValueError) as exc:
+        raise ValueError(f"Could not read managed configuration {path}: {exc}") from exc
+
+
+class ManagedConfigStore:
+    """Atomically stores the editable account and instance configuration."""
+
+    def __init__(self, path: Path, key_path: Path, audit_path: Optional[Path] = None) -> None:
+        self.path = path
+        self.key_path = key_path
+        self.audit_path = audit_path
+        self._lock = RLock()
+
+    def save(self, accounts: Dict[str, AccountConfig], targets: Dict[str, TargetConfig]) -> None:
+        with self._lock:
+            cipher = _load_fernet(self.key_path)
+            payload = {
+                "version": 2,
+                "accounts": [_account_payload(item, cipher) for item in accounts.values()],
+                "instances": [_target_payload(item) for item in targets.values()],
+            }
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_name(f".{self.path.name}.{secrets.token_hex(6)}.tmp")
+            try:
+                with temporary.open("x", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=True, indent=2)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, self.path)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+
+    def audit(self, action: str, resource: str, actor: str = "") -> None:
+        if not self.audit_path:
+            return
+        with self._lock:
+            self.audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.audit_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {"at": utc_audit_now(), "actor": actor, "action": action, "resource": resource}
+                    )
+                    + "\n"
+                )
+            os.chmod(self.audit_path, 0o600)
+
+
+def utc_audit_now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
