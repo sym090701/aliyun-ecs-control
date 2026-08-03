@@ -2,7 +2,8 @@ const elements = Object.fromEntries([
   "login-view", "dashboard-view", "login-form", "login-error", "token", "totp-field", "totp",
   "fleet-meta", "fleet-count", "target-list", "target-account", "target-name", "target-meta",
   "status-heading", "status-dot", "traffic-heading", "traffic-threshold", "traffic-percent",
-  "traffic-progress", "traffic-error", "refresh-button", "manage-button", "logout-button", "start-button", "stop-button",
+  "traffic-progress", "traffic-error", "threshold-form", "threshold-input", "threshold-save",
+  "refresh-button", "manage-button", "logout-button", "start-button", "stop-button",
   "auto-toggle", "check-button", "operation-state", "last-check", "last-action",
   "last-action-time", "banner", "stop-dialog", "stop-target-name", "confirm-stop",
   "schedule-form", "schedule-toggle", "schedule-start", "schedule-stop", "schedule-timezone",
@@ -74,6 +75,10 @@ function formatTime(value) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(date);
 }
 
+function formatThreshold(value) {
+  return Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+}
+
 function actionText(action, result) {
   if (!action) return "暂无操作";
   const actions = {
@@ -101,6 +106,7 @@ function setBusy(value, label = "就绪") {
   for (const control of [
     elements.refreshButton, elements.autoToggle, elements.checkButton, elements.scheduleToggle,
     elements.scheduleStart, elements.scheduleStop, elements.scheduleTimezone, elements.scheduleSave,
+    elements.thresholdInput, elements.thresholdSave,
     ...document.querySelectorAll('input[name="schedule-weekday"]'),
   ]) control.disabled = value;
   updateActionAvailability();
@@ -156,7 +162,10 @@ function renderDetail() {
   elements.trafficHeading.textContent = hasTraffic ? `${Number(target.traffic_gb).toFixed(2)} GB` : "不可用";
   elements.trafficError.textContent = target.traffic_error || "";
   elements.trafficError.hidden = !target.traffic_error;
-  elements.trafficThreshold.textContent = `阈值 ${Number(target.threshold_gb).toFixed(0)} GB`;
+  elements.trafficThreshold.textContent = `阈值 ${formatThreshold(target.threshold_gb)} GB`;
+  if (document.activeElement !== elements.thresholdInput) {
+    elements.thresholdInput.value = String(target.threshold_gb);
+  }
   const percent = hasTraffic ? Math.max(0, Math.min(Number(target.usage_percent) || 0, 100)) : 0;
   elements.trafficPercent.textContent = hasTraffic ? `${percent.toFixed(1)}%` : "--";
   elements.trafficProgress.style.width = `${percent}%`;
@@ -433,6 +442,16 @@ elements.autoToggle.addEventListener("change", () => {
   runTargetAction("auto", { enabled }, "保存中", enabled ? "自动策略已启用" : "自动策略已暂停");
 });
 elements.checkButton.addEventListener("click", () => runTargetAction("check", {}, "检查中", "策略检查已完成"));
+elements.thresholdForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!elements.thresholdInput.reportValidity()) return;
+  runTargetAction(
+    "threshold",
+    { threshold_gb: Number(elements.thresholdInput.value) },
+    "保存中",
+    `流量阈值已调整为 ${Number(elements.thresholdInput.value)} GB`,
+  );
+});
 elements.scheduleForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const weekdays = [...document.querySelectorAll('input[name="schedule-weekday"]:checked')]

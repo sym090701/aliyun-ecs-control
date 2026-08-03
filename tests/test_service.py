@@ -208,6 +208,14 @@ class FleetTests(unittest.TestCase):
                 }
             )
 
+    def test_manual_threshold_update_is_persisted_without_cloud_action(self):
+        fleet = self.managed_fleet()
+        result = fleet.set_threshold("cn-one", 215.5, actor="127.0.0.1")
+        self.assertEqual(result, {"target_id": "cn-one", "threshold_gb": 215.5})
+        self.assertEqual(fleet.controller("cn-one").target.traffic_threshold_gb, 215.5)
+        self.assertEqual(fleet.clients["cn-one"].calls, [])
+        self.assertIn('"action": "traffic_threshold_updated"', (self.root / "audit.log").read_text())
+
     def test_schedule_starts_once_at_configured_local_time(self):
         client = FakeClient(status="Stopped")
         controller = self.fleet(cn=client).controller("cn-one")

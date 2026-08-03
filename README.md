@@ -12,7 +12,7 @@
 - 网页查看实例状态、账号、地域和 CDT 汇总流量；
 - 手动启动和正常停止实例，停机操作需要二次确认；
 - 每台实例单独设置启动时间、停止时间、星期和 IANA 时区；
-- 每台实例单独设置流量阈值和自动策略；
+- 每台实例可在主页面手动调整流量阈值，并单独启停自动策略；
 - 定时计划与流量策略可独立使用或联合运行；
 - 随机会话 Cookie、登录限速、同源检查和可选 TOTP；
 - systemd Web 服务和每分钟自动化定时器；
@@ -54,9 +54,9 @@ RAM 用户应只授予目标实例所需的查询、启动和停止权限。不�
 从 [Releases](https://github.com/sym090701/aliyun-ecs-control/releases) 下载源码包和校验文件：
 
 ```bash
-sha256sum -c aliyun-ecs-control-2.2.0.sha256
-tar -xzf aliyun-ecs-control-2.2.0.tar.gz
-cd aliyun-ecs-control-2.2.0
+sha256sum -c aliyun-ecs-control-2.2.1.sha256
+tar -xzf aliyun-ecs-control-2.2.1.tar.gz
+cd aliyun-ecs-control-2.2.1
 sudo ./install.sh
 ```
 
@@ -77,7 +77,7 @@ sudo ./install.sh
 
 AccessKey Secret 只在提交时进入服务端，网页和读取 API 不会返回原值。托管配置默认加密写入 `/var/lib/aliyun-ecs-control/config.json`，权限为 `aliyun-ecs-control:aliyun-ecs-control 0600`；Fernet 主密钥保存在 `/etc/aliyun-ecs-control.key`，权限为 `root:aliyun-ecs-control 0640`。加密主要降低配置文件或备份被单独泄露的风险，不能替代最小权限 RAM 策略。
 
-`/etc/aliyun-ecs-control-targets.json` 是安装和升级时的引导配置。首次启动 2.2.0 时，程序会读取它并写入加密托管配置，原文件不会被网页覆盖。后续网页变更以托管配置为准。
+`/etc/aliyun-ecs-control-targets.json` 是安装和升级时的引导配置。首次启动 2.2.0 或更高版本时，程序会读取它并写入加密托管配置，原文件不会被网页覆盖。后续网页变更以托管配置为准。
 
 ## 引导配置格式
 
@@ -229,9 +229,9 @@ python -m unittest discover -s tests -v
 
 ## Release 文件
 
-- `aliyun-ecs-control-2.2.0.tar.gz`：包含安装脚本、systemd 单元、反向代理示例和测试；
-- `aliyun_ecs_control-2.2.0-py3-none-any.whl`：Python wheel；
-- `aliyun-ecs-control-2.2.0.sha256`：上述两个文件的 SHA-256 校验值。
+- `aliyun-ecs-control-2.2.1.tar.gz`：包含安装脚本、systemd 单元、反向代理示例和测试；
+- `aliyun_ecs_control-2.2.1-py3-none-any.whl`：Python wheel；
+- `aliyun-ecs-control-2.2.1.sha256`：上述两个文件的 SHA-256 校验值。
 
 ## 许可证
 
