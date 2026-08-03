@@ -35,13 +35,14 @@
       </div>
       <div class="header-actions">
         <button id="refresh-button" class="button quiet" type="button">刷新</button>
+        <button id="manage-button" class="button quiet" type="button">管理</button>
         <button id="logout-button" class="button quiet" type="button">退出</button>
       </div>
     </header>
 
     <div id="banner" class="banner" role="status" hidden></div>
 
-    <section class="fleet-layout">
+    <section id="fleet-view" class="fleet-layout">
       <aside class="fleet-panel" aria-labelledby="fleet-heading">
         <div class="fleet-heading">
           <div>
@@ -53,7 +54,7 @@
         <div id="target-list" class="target-list"></div>
       </aside>
 
-      <section class="target-detail" aria-live="polite">
+      <section id="target-detail" class="target-detail" aria-live="polite">
         <div class="target-header">
           <div>
             <p id="target-account" class="section-label">--</p>
@@ -195,6 +196,38 @@
         </section>
       </section>
     </section>
+
+    <section id="management-view" class="management-view" hidden>
+      <div class="management-heading">
+        <div>
+          <p class="section-label">配置中心</p>
+          <h2>账号与实例</h2>
+        </div>
+        <button id="management-close" class="button quiet" type="button">返回实例</button>
+      </div>
+
+      <section class="management-section" aria-labelledby="accounts-heading">
+        <div class="management-section-heading">
+          <div>
+            <p class="section-label">凭据</p>
+            <h3 id="accounts-heading">阿里云账号</h3>
+          </div>
+          <button id="account-add" class="button primary" type="button">添加账号</button>
+        </div>
+        <div id="account-list" class="management-list"></div>
+      </section>
+
+      <section class="management-section" aria-labelledby="instances-heading">
+        <div class="management-section-heading">
+          <div>
+            <p class="section-label">资源</p>
+            <h3 id="instances-heading">ECS 实例</h3>
+          </div>
+          <button id="instance-add" class="button primary" type="button">添加实例</button>
+        </div>
+        <div id="instance-list" class="management-list"></div>
+      </section>
+    </section>
   </main>
 
   <dialog id="stop-dialog" class="confirm-dialog">
@@ -204,6 +237,68 @@
       <div class="dialog-actions">
         <button class="button quiet" value="cancel">取消</button>
         <button id="confirm-stop" class="button danger" value="confirm">确认停止</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="account-dialog" class="editor-dialog">
+    <form id="account-form" autocomplete="off">
+      <div class="editor-heading">
+        <div>
+          <p class="section-label">账号配置</p>
+          <h2 id="account-dialog-title">添加账号</h2>
+        </div>
+        <button class="button quiet dialog-close" type="button" data-close-dialog="account-dialog">取消</button>
+      </div>
+      <div class="editor-fields two-column">
+        <label><span>账号 ID</span><input id="account-id" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64"></label>
+        <label><span>显示名称</span><input id="account-name" required maxlength="80"></label>
+        <label><span>AccessKey ID</span><input id="account-key-id" autocomplete="off" maxlength="128"></label>
+        <label><span>AccessKey Secret</span><input id="account-key-secret" type="password" autocomplete="new-password" maxlength="256"></label>
+        <label class="totp-input"><span>当前动态验证码</span><input id="account-totp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
+      </div>
+      <div id="account-error" class="form-error" role="alert"></div>
+      <div class="editor-actions">
+        <button id="account-test" class="button quiet" type="button">测试凭据</button>
+        <button id="account-save" class="button primary" type="submit">保存账号</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="instance-dialog" class="editor-dialog">
+    <form id="instance-form" autocomplete="off">
+      <div class="editor-heading">
+        <div>
+          <p class="section-label">资源配置</p>
+          <h2 id="instance-dialog-title">添加实例</h2>
+        </div>
+        <button class="button quiet dialog-close" type="button" data-close-dialog="instance-dialog">取消</button>
+      </div>
+      <div class="editor-fields two-column">
+        <label><span>实例 ID 标识</span><input id="instance-key" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64"></label>
+        <label><span>显示名称</span><input id="instance-name" required maxlength="80"></label>
+        <label><span>所属账号</span><select id="instance-account" required></select></label>
+        <label><span>地域 ID</span><input id="instance-region" required maxlength="64" placeholder="cn-hongkong"></label>
+        <label><span>ECS Instance ID</span><input id="instance-cloud-id" required maxlength="128" placeholder="i-xxxxxxxx"></label>
+        <label><span>流量阈值 GB</span><input id="instance-threshold" type="number" min="0.01" step="0.01" value="180" required></label>
+        <label class="totp-input"><span>当前动态验证码</span><input id="instance-totp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
+      </div>
+      <div id="instance-error" class="form-error" role="alert"></div>
+      <div class="editor-actions">
+        <button id="instance-save" class="button primary" type="submit">保存实例</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="delete-dialog" class="confirm-dialog">
+    <form id="delete-form">
+      <h2 id="delete-title">删除配置？</h2>
+      <p id="delete-description"></p>
+      <label class="confirm-totp"><span>当前动态验证码</span><input id="delete-totp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
+      <div id="delete-error" class="form-error" role="alert"></div>
+      <div class="dialog-actions">
+        <button class="button quiet" type="button" data-close-dialog="delete-dialog">取消</button>
+        <button id="delete-confirm" class="button danger" type="submit">确认删除</button>
       </div>
     </form>
   </dialog>

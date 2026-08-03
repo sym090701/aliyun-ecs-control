@@ -8,11 +8,12 @@
 ## 功能
 
 - 多账号、多地域、多实例统一管理；
+- 网页添加、更新和删除账号与实例，敏感变更需要 TOTP 复验；
 - 网页查看实例状态、账号、地域和 CDT 汇总流量；
 - 手动启动和正常停止实例，停机操作需要二次确认；
 - 每台实例单独设置启动时间、停止时间、星期和 IANA 时区；
 - 每台实例单独设置流量阈值和自动策略；
-- 定时计划与流量策略互斥，避免两套自动化相互打架；
+- 定时计划与流量策略可独立使用或联合运行；
 - 随机会话 Cookie、登录限速、同源检查和可选 TOTP；
 - systemd Web 服务和每分钟自动化定时器；
 - CLI 支持状态查询、开关机、策略和计划管理。
@@ -32,7 +33,8 @@ ECS Fleet Control ----> Alibaba Cloud ECS / CDT API
   |
   +---- /etc/aliyun-ecs-control.env
   +---- /etc/aliyun-ecs-control-targets.json
-  +---- /var/lib/aliyun-ecs-control/
+  +---- /etc/aliyun-ecs-control.key
+  +---- /var/lib/aliyun-ecs-control/config.json
 ```
 
 Web 服务和自动化任务都以专用的 `aliyun-ecs-control` 用户运行。systemd 单元启用了 `NoNewPrivileges`、`ProtectSystem=strict`、`PrivateDevices` 等沙箱选项。
@@ -52,9 +54,9 @@ RAM 用户应只授予目标实例所需的查询、启动和停止权限。不�
 从 [Releases](https://github.com/sym090701/aliyun-ecs-control/releases) 下载源码包和校验文件：
 
 ```bash
-sha256sum -c aliyun-ecs-control-2.1.0.sha256
-tar -xzf aliyun-ecs-control-2.1.0.tar.gz
-cd aliyun-ecs-control-2.1.0
+sha256sum -c aliyun-ecs-control-2.2.0.sha256
+tar -xzf aliyun-ecs-control-2.2.0.tar.gz
+cd aliyun-ecs-control-2.2.0
 sudo ./install.sh
 ```
 
@@ -69,7 +71,15 @@ sudo ./install.sh
 
 已有的 `/etc/aliyun-ecs-control.env` 和 `/etc/aliyun-ecs-control-targets.json` 会被保留。升级前，安装程序会把旧的 `/opt/aliyun-ecs-control` 复制到带时间戳的备份目录。
 
-## 多账号配置
+## 网页管理账号与实例
+
+登录后打开“管理”，可以添加多个阿里云内地或国际账号，并把不同地域的 ECS 实例绑定到对应账号。添加、替换、删除和凭据测试均要求再次输入当前 TOTP。
+
+AccessKey Secret 只在提交时进入服务端，网页和读取 API 不会返回原值。托管配置默认加密写入 `/var/lib/aliyun-ecs-control/config.json`，权限为 `aliyun-ecs-control:aliyun-ecs-control 0600`；Fernet 主密钥保存在 `/etc/aliyun-ecs-control.key`，权限为 `root:aliyun-ecs-control 0640`。加密主要降低配置文件或备份被单独泄露的风险，不能替代最小权限 RAM 策略。
+
+`/etc/aliyun-ecs-control-targets.json` 是安装和升级时的引导配置。首次启动 2.2.0 时，程序会读取它并写入加密托管配置，原文件不会被网页覆盖。后续网页变更以托管配置为准。
+
+## 引导配置格式
 
 配置文件默认为 `/etc/aliyun-ecs-control-targets.json`，参考 [`aliyun-ecs-control-targets.example.json`](aliyun-ecs-control-targets.example.json)。
 
@@ -104,7 +114,7 @@ sudo ./install.sh
 }
 ```
 
-`accounts` 可以配置阿里云内地和国际账号；每个 `instances` 条目通过 `account` 引用对应凭证。安装后的配置权限必须保持为 `root:aliyun-ecs-control`、`0640`。
+`accounts` 可以配置阿里云内地和国际账号；每个 `instances` 条目通过 `account` 引用对应凭证。迁移后的引导配置及其备份权限为 `root:root 0600`。
 
 ## 定时开关机
 
@@ -117,7 +127,9 @@ sudo ./install.sh
 
 systemd timer 每分钟检查一次。同一实例、日期、分钟和动作只处理一次；实例已经处于目标状态时不会重复提交云端请求。控制服务离线后不会补做已经过期的动作。
 
-同一台实例不能同时启用定时计划和流量自动策略。手动启动、停止不受该限制。
+星期表示运行时段的启动日。跨午夜计划如周一 `22:00-08:00` 会在周一晚启动，并在周二早上停止。
+
+定时计划与流量守护同时启用时，定时计划定义允许运行窗口：窗口外保持停止；窗口内流量低于阈值时保持运行，达到阈值时正常停止。窗口外不会因为低流量重新启动。流量查询失败时保持当前电源状态，不提交启动或停止请求。自动化启用期间，手动操作可能在下一分钟被策略纠正。
 
 ## CDT 流量策略说明
 
@@ -135,8 +147,9 @@ systemd timer 每分钟检查一次。同一实例、日期、分钟和动作只
 4. 设置 `COOKIE_SECURE=true`；
 5. 设置 `TRUST_PROXY=true`；
 6. 配置 `TOTP_SECRET`；
-7. 使用最小权限 RAM 用户；
-8. 可在反向代理前增加 Cloudflare Access 或 VPN。
+7. 保持 `/etc/aliyun-ecs-control.key` 仅对 root 和服务组可读；
+8. 使用最小权限 RAM 用户；
+9. 可在反向代理前增加 Cloudflare Access 或 VPN。
 
 反向代理示例：
 
@@ -216,9 +229,9 @@ python -m unittest discover -s tests -v
 
 ## Release 文件
 
-- `aliyun-ecs-control-2.1.0.tar.gz`：包含安装脚本、systemd 单元、反向代理示例和测试；
-- `aliyun_ecs_control-2.1.0-py3-none-any.whl`：Python wheel；
-- `aliyun-ecs-control-2.1.0.sha256`：上述两个文件的 SHA-256 校验值。
+- `aliyun-ecs-control-2.2.0.tar.gz`：包含安装脚本、systemd 单元、反向代理示例和测试；
+- `aliyun_ecs_control-2.2.0-py3-none-any.whl`：Python wheel；
+- `aliyun-ecs-control-2.2.0.sha256`：上述两个文件的 SHA-256 校验值。
 
 ## 许可证
 

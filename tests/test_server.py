@@ -40,10 +40,14 @@ class FakeController:
     def check_policy(self, force=False):
         return {"target_id": self.target_id, "skipped": False, "forced": force}
 
+    def check_automation(self, force_traffic=False):
+        return {"target_id": self.target_id, "skipped": False, "forced": force_traffic}
+
 
 class FakeFleet:
     def __init__(self):
         self.controllers = {"cn-one": FakeController("cn-one"), "intl-one": FakeController("intl-one")}
+        self.last_management_call = None
 
     def overview(self):
         return {
@@ -58,6 +62,40 @@ class FakeFleet:
         if target_id not in self.controllers:
             raise KeyError(f"Unknown target: {target_id}")
         return self.controllers[target_id]
+
+    def configuration(self):
+        return {
+            "accounts": [{"id": "cn", "name": "阿里云内地", "access_key_id_masked": "test...-id", "instance_count": 1}],
+            "instances": [{"id": "cn-one", "name": "北京主机", "account": "cn"}],
+        }
+
+    def add_account(self, body, actor=""):
+        self.last_management_call = ("add_account", dict(body))
+        return {"id": body["id"], "name": body["name"], "access_key_id_masked": "****", "instance_count": 0}
+
+    def update_account(self, account_id, body, actor=""):
+        self.last_management_call = ("update_account", account_id, dict(body))
+        return {"id": account_id, "name": body["name"], "access_key_id_masked": "****", "instance_count": 0}
+
+    def delete_account(self, account_id, actor=""):
+        self.last_management_call = ("delete_account", account_id)
+        return {"id": account_id, "deleted": True}
+
+    def add_target(self, body, actor=""):
+        self.last_management_call = ("add_target", dict(body))
+        return {"id": body["id"]}
+
+    def update_target(self, target_id, body, actor=""):
+        self.last_management_call = ("update_target", target_id, dict(body))
+        return {"id": target_id}
+
+    def delete_target(self, target_id, actor=""):
+        self.last_management_call = ("delete_target", target_id)
+        return {"id": target_id, "deleted": True}
+
+    def test_credentials(self, body):
+        self.last_management_call = ("test_credentials", dict(body))
+        return {"valid": True}
 
 
 class ServerTests(unittest.TestCase):
@@ -80,9 +118,10 @@ class ServerTests(unittest.TestCase):
         self._start_server()
 
     def _start_server(self):
+        self.fleet = FakeFleet()
         self.server = ThreadingHTTPServer(
             ("127.0.0.1", 0),
-            create_handler(self.config, FakeFleet()),
+            create_handler(self.config, self.fleet),
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -140,6 +179,63 @@ class ServerTests(unittest.TestCase):
         status, data, _ = self.request("GET", "/api/overview", headers={"Cookie": cookie})
         self.assertEqual(status, 200)
         self.assertEqual(data["data"]["target_count"], 2)
+
+    def test_configuration_requires_authentication(self):
+        status, _, _ = self.request("GET", "/api/configuration")
+        self.assertEqual(status, 401)
+
+    def test_management_requires_totp_to_be_configured(self):
+        cookie = self.login_cookie()
+        status, data, _ = self.request(
+            "POST",
+            "/api/accounts",
+            {"id": "new", "name": "New", "access_key_id": "test-id", "access_key_secret": "test-secret"},
+            self.write_headers(cookie),
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("TOTP", data["error"])
+
+    def test_account_management_requires_current_totp_and_strips_code(self):
+        secret = pyotp.random_base32()
+        self.config = Config(**{**self.config.__dict__, "totp_secret": secret})
+        self._restart_server()
+        code = pyotp.TOTP(secret).now()
+        cookie = self.login_cookie(totp=code)
+        body = {"id": "new", "name": "New", "access_key_id": "test-id", "access_key_secret": "test-secret"}
+        denied, _, _ = self.request("POST", "/api/accounts", body, self.write_headers(cookie))
+        accepted, data, _ = self.request("POST", "/api/accounts", {**body, "totp": code}, self.write_headers(cookie))
+        self.assertEqual(denied, 403)
+        self.assertEqual(accepted, 200)
+        self.assertNotIn("totp", self.fleet.last_management_call[1])
+        self.assertNotIn("access_key_secret", data["data"])
+
+    def test_instance_create_and_delete_routes_require_step_up(self):
+        secret = pyotp.random_base32()
+        self.config = Config(**{**self.config.__dict__, "totp_secret": secret})
+        self._restart_server()
+        code = pyotp.TOTP(secret).now()
+        cookie = self.login_cookie(totp=code)
+        headers = self.write_headers(cookie)
+        created, _, _ = self.request(
+            "POST",
+            "/api/instances",
+            {
+                "id": "hk-two",
+                "name": "HK Two",
+                "account": "cn",
+                "region": "cn-hongkong",
+                "instance_id": "i-two",
+                "traffic_threshold_gb": 100,
+                "totp": code,
+            },
+            headers,
+        )
+        deleted, _, _ = self.request(
+            "DELETE", "/api/instances/hk-two", {"totp": code}, headers
+        )
+        self.assertEqual(created, 200)
+        self.assertEqual(deleted, 200)
+        self.assertEqual(self.fleet.last_management_call, ("delete_target", "hk-two"))
 
     def test_totp_is_required_when_configured(self):
         secret = pyotp.random_base32()

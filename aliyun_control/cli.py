@@ -100,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     totp.add_argument("--account", default="admin")
     initialize = commands.add_parser("init-config")
     initialize.add_argument("--path", type=Path, default=Path("/etc/aliyun-ecs-control-targets.json"))
+    commands.add_parser("migrate-config", help="Encrypt the legacy bootstrap configuration")
     return parser
 
 
@@ -119,6 +120,11 @@ def main() -> int:
         return 0
     if args.command == "init-config":
         interactive_config(args.path)
+        return 0
+    if args.command == "migrate-config":
+        config = Config.from_env(require_web_token=False)
+        ControlFleet(config)
+        print(f"Managed configuration ready: {config.managed_config_path}")
         return 0
 
     config = Config.from_env(require_web_token=args.command == "serve")

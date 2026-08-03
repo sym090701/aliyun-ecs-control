@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aliyun_control.config import load_targets_file
+from cryptography.fernet import Fernet
+
+from aliyun_control.config import ManagedConfigStore, load_managed_config, load_targets_file
 
 
 class ConfigTests(unittest.TestCase):
@@ -95,14 +97,44 @@ class ConfigTests(unittest.TestCase):
         finally:
             temporary.cleanup()
 
-    def test_rejects_schedule_and_traffic_policy_enabled_together(self):
+    def test_allows_schedule_and_traffic_policy_enabled_together(self):
         payload = self.base_payload()
         payload["instances"][0]["auto_enabled_default"] = True
         payload["instances"][0]["schedule"] = {"enabled": True}
         temporary, path = self.write_config(payload)
         try:
-            with self.assertRaisesRegex(ValueError, "cannot enable traffic policy and schedule"):
+            _, targets = load_targets_file(path)
+            self.assertTrue(targets["hk-one"].auto_enabled_default)
+            self.assertTrue(targets["hk-one"].schedule_enabled_default)
+        finally:
+            temporary.cleanup()
+
+    def test_rejects_non_finite_traffic_threshold(self):
+        payload = self.base_payload()
+        payload["instances"][0]["traffic_threshold_gb"] = "NaN"
+        temporary, path = self.write_config(payload)
+        try:
+            with self.assertRaisesRegex(ValueError, "greater than zero"):
                 load_targets_file(path)
+        finally:
+            temporary.cleanup()
+
+    def test_managed_store_encrypts_credentials_and_round_trips(self):
+        temporary, legacy_path = self.write_config(self.base_payload())
+        try:
+            root = Path(temporary.name)
+            managed_path = root / "managed.json"
+            key_path = root / "credential.key"
+            key_path.write_bytes(Fernet.generate_key())
+            accounts, targets = load_targets_file(legacy_path)
+            ManagedConfigStore(managed_path, key_path).save(accounts, targets)
+            raw = managed_path.read_text(encoding="utf-8")
+            self.assertNotIn("test-id", raw)
+            self.assertNotIn("test-secret", raw)
+            loaded_accounts, loaded_targets = load_managed_config(managed_path, key_path)
+            self.assertEqual(loaded_accounts["intl"].access_key_secret, "test-secret")
+            self.assertEqual(loaded_targets["hk-one"].region_id, "cn-hongkong")
+            self.assertEqual(managed_path.stat().st_mode & 0o777, 0o600)
         finally:
             temporary.cleanup()
 
