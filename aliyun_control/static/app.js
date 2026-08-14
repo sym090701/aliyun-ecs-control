@@ -1,12 +1,11 @@
 const elements = Object.fromEntries([
-  "login-view", "dashboard-view", "login-form", "login-error", "token", "totp-field", "totp",
+  "login-view", "dashboard-view", "login-form", "login-error", "totp",
   "fleet-meta", "fleet-count", "target-list", "target-account", "target-name", "target-meta",
   "status-heading", "status-dot", "traffic-heading", "traffic-threshold", "traffic-percent",
   "traffic-progress", "traffic-error", "threshold-form", "threshold-input", "threshold-save",
   "refresh-button", "manage-button", "logout-button", "start-button", "stop-button",
-  "auto-toggle", "check-button", "operation-state", "last-check", "last-action",
-  "last-action-time", "banner", "stop-dialog", "stop-target-name", "confirm-stop",
-  "schedule-form", "schedule-toggle", "schedule-start", "schedule-stop", "schedule-timezone",
+  "auto-toggle", "check-button", "operation-state", "last-check", "activity-list", "banner", "stop-dialog", "stop-target-name", "confirm-stop",
+  "schedule-form", "schedule-toggle", "schedule-days", "schedule-timezone", "schedule-bulk-start", "schedule-bulk-stop", "schedule-bulk-apply",
   "schedule-next", "schedule-save", "fleet-view", "target-detail", "management-view", "management-close",
   "account-list", "instance-list", "account-add", "instance-add", "account-dialog", "account-form",
   "account-dialog-title", "account-id", "account-name", "account-key-id", "account-key-secret",
@@ -14,7 +13,7 @@ const elements = Object.fromEntries([
   "instance-dialog-title", "instance-key", "instance-name", "instance-account", "instance-region",
   "instance-cloud-id", "instance-threshold", "instance-totp", "instance-error", "instance-save",
   "delete-dialog", "delete-form", "delete-title", "delete-description", "delete-totp", "delete-error",
-  "delete-confirm",
+  "delete-confirm", "activity-source-filter", "activity-outcome-filter", "activity-more", "activity-meta",
 ].map((id) => [id.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()), document.querySelector(`#${id}`)]));
 
 let targets = [];
@@ -25,6 +24,11 @@ let managementOpen = false;
 let editingAccountId = null;
 let editingInstanceId = null;
 let pendingDelete = null;
+let activityHistory = [];
+let activityTargetId = null;
+let activityOffset = 0;
+let activityHasMore = false;
+let activityLoading = false;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -45,12 +49,10 @@ function selectedTarget() {
   return targets.find((target) => target.id === selectedId) || null;
 }
 
-function showLogin(totpRequired = false) {
+function showLogin() {
   elements.dashboardView.hidden = true;
   elements.loginView.hidden = false;
-  elements.totpField.hidden = !totpRequired;
-  elements.totp.required = totpRequired;
-  elements.token.focus();
+  elements.totp.focus();
 }
 
 function showDashboard() {
@@ -79,13 +81,34 @@ function formatThreshold(value) {
   return Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 }
 
+function scheduleOffsetValue(value) {
+  const knownOffsets = {
+    UTC: "UTC+00:00", "Asia/Shanghai": "UTC+08:00", "Asia/Hong_Kong": "UTC+08:00",
+    "Asia/Singapore": "UTC+08:00", "Asia/Tokyo": "UTC+09:00", "Europe/London": "UTC+00:00",
+    "America/Los_Angeles": "UTC-08:00",
+  };
+  return /^UTC[+-](?:0\d|1[0-4]):[0-5]\d$/.test(value || "") ? value : (knownOffsets[value] || "UTC+08:00");
+}
+
+function formatScheduleTime(value, offset) {
+  const match = /^UTC([+-])(\d{2}):(\d{2})$/.exec(offset || "");
+  const date = new Date(value);
+  if (!match || Number.isNaN(date.getTime())) return value;
+  const minutes = (Number(match[2]) * 60 + Number(match[3])) * (match[1] === "+" ? 1 : -1);
+  const localDate = new Date(date.getTime() + minutes * 60_000);
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "UTC", month: "2-digit", day: "2-digit", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(localDate);
+}
+
 function actionText(action, result) {
   if (!action) return "暂无操作";
   const actions = {
     start: "启动实例", stop: "停止实例", auto_enabled: "启用自动策略", auto_disabled: "暂停自动策略",
     schedule_enabled: "启用定时计划", schedule_disabled: "暂停定时计划",
     schedule_start: "定时启动", schedule_stop: "定时停止",
-    combined_start: "联合策略启动", combined_stop: "联合策略停止",
+    traffic_start: "流量策略启动", traffic_stop: "流量策略停止",
+    traffic_check: "流量检查", schedule_check: "定时检查", automation_check: "自动化检查",
   };
   const results = {
     "Start request accepted": "启动请求已提交",
@@ -100,14 +123,109 @@ function actionText(action, result) {
   return `${actions[action] || action} · ${results[result] || result || "已完成"}`;
 }
 
+function activityOutcomeText(outcome) {
+  return ({ success: "成功", skipped: "未执行", failed: "失败" })[outcome] || "未知";
+}
+
+function renderActivity(history = activityHistory) {
+  activityHistory = Array.isArray(history) ? history : [];
+  elements.activityList.replaceChildren(...activityHistory.map((entry) => {
+    const row = document.createElement("li");
+    row.className = "activity-row";
+    const copy = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = actionText(entry.action, entry.result);
+    const time = document.createElement("time");
+    time.textContent = formatTime(entry.at);
+    copy.append(title, time);
+    const outcome = document.createElement("span");
+    outcome.className = `activity-outcome ${entry.outcome || "unknown"}`;
+    outcome.textContent = activityOutcomeText(entry.outcome);
+    row.append(copy, outcome);
+    return row;
+  }));
+  if (!activityHistory.length) {
+    const empty = document.createElement("li");
+    empty.className = "activity-empty";
+    empty.textContent = "暂无记录";
+    elements.activityList.append(empty);
+  }
+  elements.activityMeta.textContent = activityHistory.length ? `已显示 ${activityHistory.length} 条` : "";
+  elements.activityMore.hidden = !activityHasMore;
+  elements.activityMore.disabled = activityLoading;
+  elements.activityMore.textContent = activityLoading ? "加载中" : "加载更多";
+}
+
+const weekdayLabels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+function renderScheduleDays(days) {
+  const rows = Array.isArray(days) ? days : [];
+  elements.scheduleDays.replaceChildren(...weekdayLabels.map((label, weekday) => {
+    const row = rows.find((item) => item.weekday === weekday) || { weekday, enabled: false, start: "08:00", stop: "23:00" };
+    const item = document.createElement("div");
+    item.className = "schedule-day-row";
+    item.setAttribute("role", "row");
+    item.dataset.weekday = String(weekday);
+    item.innerHTML = `<label class="schedule-select-cell" role="cell" aria-label="选择${label}用于批量修改"><input type="checkbox" data-schedule-day-selected></label><strong class="schedule-day-name" role="cell">${label}</strong><label class="switch compact" role="cell" aria-label="启用${label}计划"><input type="checkbox" data-schedule-day-enabled><span class="switch-track"></span></label><label class="schedule-time-field" role="cell"><span>开机</span><input type="time" data-schedule-day-start aria-label="${label}开机时间" required></label><label class="schedule-time-field" role="cell"><span>关机</span><input type="time" data-schedule-day-stop aria-label="${label}关机时间" required></label>`;
+    item.querySelector("[data-schedule-day-enabled]").checked = Boolean(row.enabled);
+    item.querySelector("[data-schedule-day-start]").value = row.start || "08:00";
+    item.querySelector("[data-schedule-day-stop]").value = row.stop || "23:00";
+    return item;
+  }));
+}
+
+function selectedScheduleRows() {
+  return [...elements.scheduleDays.querySelectorAll(".schedule-day-row")]
+    .filter((row) => row.querySelector("[data-schedule-day-selected]").checked);
+}
+
+function setBulkSelection(kind) {
+  for (const row of elements.scheduleDays.querySelectorAll(".schedule-day-row")) {
+    const weekday = Number(row.dataset.weekday);
+    row.querySelector("[data-schedule-day-selected]").checked = (
+      kind === "all" || (kind === "weekdays" && weekday < 5) || (kind === "weekend" && weekday >= 5)
+    );
+  }
+}
+
+function applyBulkScheduleTimes() {
+  const selected = selectedScheduleRows();
+  const start = elements.scheduleBulkStart.value;
+  const stop = elements.scheduleBulkStop.value;
+  if (!start || !stop || start === stop) {
+    showBanner("批量开机和关机时间必须不同", true);
+    return;
+  }
+  if (!selected.length) {
+    showBanner("请先选择要批量修改的日期", true);
+    return;
+  }
+  for (const row of selected) {
+    row.querySelector("[data-schedule-day-start]").value = start;
+    row.querySelector("[data-schedule-day-stop]").value = stop;
+  }
+  showBanner(`已更新 ${selected.length} 个日期，点击保存计划后生效`);
+}
+
+function scheduleDaysPayload() {
+  return [...elements.scheduleDays.querySelectorAll(".schedule-day-row")].map((row) => ({
+    weekday: Number(row.dataset.weekday),
+    enabled: row.querySelector("[data-schedule-day-enabled]").checked,
+    start: row.querySelector("[data-schedule-day-start]").value,
+    stop: row.querySelector("[data-schedule-day-stop]").value,
+  }));
+}
+
 function setBusy(value, label = "就绪") {
   busy = value;
   elements.operationState.textContent = label;
   for (const control of [
     elements.refreshButton, elements.autoToggle, elements.checkButton, elements.scheduleToggle,
-    elements.scheduleStart, elements.scheduleStop, elements.scheduleTimezone, elements.scheduleSave,
+    elements.scheduleTimezone, elements.scheduleSave,
+    elements.scheduleBulkStart, elements.scheduleBulkStop, elements.scheduleBulkApply,
     elements.thresholdInput, elements.thresholdSave,
-    ...document.querySelectorAll('input[name="schedule-weekday"]'),
+    ...document.querySelectorAll("[data-schedule-select]"),
+    ...elements.scheduleDays.querySelectorAll("input"),
   ]) control.disabled = value;
   updateActionAvailability();
 }
@@ -144,6 +262,7 @@ function renderTargetList() {
     button.addEventListener("click", () => {
       selectedId = target.id;
       render();
+      void loadActivity(true);
     });
     return button;
   }));
@@ -173,29 +292,21 @@ function renderDetail() {
   elements.autoToggle.checked = Boolean(target.auto_enabled);
   elements.autoToggle.disabled = busy || target.status === "Error";
   elements.lastCheck.textContent = formatTime(target.last_check);
-  elements.lastAction.textContent = target.error || actionText(target.last_action, target.last_result);
-  elements.lastActionTime.textContent = target.last_check ? formatTime(target.last_check) : "";
+  if (activityTargetId !== target.id) {
+    activityTargetId = target.id;
+    activityOffset = 0;
+    activityHasMore = false;
+    activityHistory = [];
+  }
+  renderActivity(activityHistory.length ? activityHistory : target.activity_history);
   elements.stopTargetName.textContent = target.name;
   elements.scheduleToggle.checked = Boolean(target.schedule_enabled);
-  elements.scheduleStart.value = target.schedule_start || "08:00";
-  elements.scheduleStop.value = target.schedule_stop || "23:00";
-  elements.scheduleTimezone.value = target.schedule_timezone || "Asia/Shanghai";
-  const selectedDays = new Set(target.schedule_weekdays || []);
-  for (const checkbox of document.querySelectorAll('input[name="schedule-weekday"]')) {
-    checkbox.checked = selectedDays.has(Number(checkbox.value));
-  }
+  elements.scheduleTimezone.value = scheduleOffsetValue(target.schedule_timezone);
+  renderScheduleDays(target.schedule_days);
   if (target.schedule_next_at) {
     const action = target.schedule_next_action === "start" ? "启动" : "停止";
-    try {
-      const formatted = new Intl.DateTimeFormat("zh-CN", {
-        timeZone: target.schedule_timezone,
-        month: "2-digit", day: "2-digit", weekday: "short", hour: "2-digit", minute: "2-digit",
-        hour12: false,
-      }).format(new Date(target.schedule_next_at));
-      elements.scheduleNext.textContent = `${formatted} · ${action} · ${target.schedule_timezone}`;
-    } catch (_) {
-      elements.scheduleNext.textContent = `${target.schedule_next_at} · ${action}`;
-    }
+    const offset = scheduleOffsetValue(target.schedule_timezone);
+    elements.scheduleNext.textContent = `${formatScheduleTime(target.schedule_next_at, offset)} · ${action} · ${offset}`;
   } else {
     elements.scheduleNext.textContent = "计划未启用";
   }
@@ -374,16 +485,49 @@ async function refresh(preserveBanner = false) {
     targets = data.targets || [];
     if (!targets.some((target) => target.id === selectedId)) selectedId = targets[0]?.id || null;
     render();
+    await loadActivity(true);
     if (!preserveBanner) showBanner("");
   } catch (error) {
     if (error.status === 401) {
-      const session = await api("/api/session").catch(() => ({ totp_required: false }));
-      showLogin(session.totp_required);
+      await api("/api/session").catch(() => null);
+      showLogin();
       return;
     }
     showBanner(error.message, true);
   } finally {
     setBusy(false);
+  }
+}
+
+async function loadActivity(reset = false) {
+  const target = selectedTarget();
+  if (!target || activityLoading) return;
+  if (reset) {
+    activityTargetId = target.id;
+    activityOffset = 0;
+    activityHasMore = false;
+    activityHistory = [];
+  }
+  const targetId = target.id;
+  activityLoading = true;
+  renderActivity();
+  try {
+    const query = new URLSearchParams({
+      source: elements.activitySourceFilter.value,
+      outcome: elements.activityOutcomeFilter.value,
+      offset: String(activityOffset),
+      limit: "50",
+    });
+    const data = await api(`/api/targets/${encodeURIComponent(targetId)}/activity?${query}`);
+    if (selectedId !== targetId || activityTargetId !== targetId) return;
+    activityHistory = reset ? data.items : [...activityHistory, ...data.items];
+    activityOffset += data.items.length;
+    activityHasMore = Boolean(data.has_more);
+  } catch (error) {
+    if (selectedId === targetId) showBanner(error.message, true);
+  } finally {
+    activityLoading = false;
+    if (selectedId === targetId) renderActivity();
   }
 }
 
@@ -410,8 +554,7 @@ elements.loginForm.addEventListener("submit", async (event) => {
   const submit = elements.loginForm.querySelector("button[type='submit']");
   submit.disabled = true;
   try {
-    await api("/api/login", { method: "POST", body: JSON.stringify({ token: elements.token.value, totp: elements.totp.value }) });
-    elements.token.value = "";
+    await api("/api/login", { method: "POST", body: JSON.stringify({ totp: elements.totp.value }) });
     elements.totp.value = "";
     showDashboard();
     await refresh();
@@ -454,21 +597,26 @@ elements.thresholdForm.addEventListener("submit", (event) => {
 });
 elements.scheduleForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  const weekdays = [...document.querySelectorAll('input[name="schedule-weekday"]:checked')]
-    .map((checkbox) => Number(checkbox.value));
   runTargetAction(
     "schedule",
     {
       enabled: elements.scheduleToggle.checked,
-      start: elements.scheduleStart.value,
-      stop: elements.scheduleStop.value,
-      weekdays,
+      days: scheduleDaysPayload(),
       timezone: elements.scheduleTimezone.value.trim(),
     },
     "保存中",
     elements.scheduleToggle.checked ? "定时计划已启用" : "定时计划已保存并暂停",
   );
 });
+
+for (const button of document.querySelectorAll("[data-schedule-select]")) {
+  button.addEventListener("click", () => setBulkSelection(button.dataset.scheduleSelect));
+}
+elements.scheduleBulkApply.addEventListener("click", applyBulkScheduleTimes);
+
+elements.activitySourceFilter.addEventListener("change", () => void loadActivity(true));
+elements.activityOutcomeFilter.addEventListener("change", () => void loadActivity(true));
+elements.activityMore.addEventListener("click", () => void loadActivity());
 
 elements.accountTest.addEventListener("click", async () => {
   elements.accountError.textContent = "";
@@ -581,8 +729,8 @@ elements.logoutButton.addEventListener("click", async () => {
   elements.managementView.hidden = true;
   elements.fleetView.hidden = false;
   elements.manageButton.textContent = "管理";
-  const session = await api("/api/session").catch(() => ({ totp_required: false }));
-  showLogin(session.totp_required);
+  await api("/api/session").catch(() => null);
+  showLogin();
 });
 
 (async function initialize() {
@@ -592,10 +740,10 @@ elements.logoutButton.addEventListener("click", async () => {
       showDashboard();
       await refresh();
     } else {
-      showLogin(session.totp_required);
+      showLogin();
     }
   } catch (error) {
-    showLogin(false);
+    showLogin();
     elements.loginError.textContent = error.message;
   }
 })();

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import ipaddress
 import json
 import logging
@@ -14,7 +13,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import pyotp
 
@@ -82,6 +81,8 @@ def create_handler(config: Config, fleet: ControlFleet):
     limiter = LoginLimiter()
     sessions = SessionStore(config.session_hours * 3600)
     totp = pyotp.TOTP(config.totp_secret) if config.totp_secret else None
+    if totp is None:
+        raise ValueError("TOTP_SECRET must be configured for web login")
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "ECSControl/2.2"
@@ -161,18 +162,9 @@ def create_handler(config: Config, fleet: ControlFleet):
             return len(code) == 6 and code.isdigit() and bool(totp.verify(code, valid_window=1))
 
         def _authenticated(self) -> bool:
-            if sessions.valid(self._session_token()):
-                return True
-            bearer = self.headers.get("Authorization", "")
-            if not bearer.startswith("Bearer "):
-                return False
-            if not hmac.compare_digest(bearer[7:], config.control_token):
-                return False
-            return self._totp_valid(self.headers.get("X-TOTP", ""))
+            return sessions.valid(self._session_token())
 
         def _same_origin(self) -> bool:
-            if self.headers.get("Authorization", "").startswith("Bearer "):
-                return True
             origin = self.headers.get("Origin")
             if not origin:
                 return False
@@ -217,7 +209,8 @@ def create_handler(config: Config, fleet: ControlFleet):
             return None
 
         def do_GET(self) -> None:
-            path = urlparse(self.path).path
+            parsed_url = urlparse(self.path)
+            path = parsed_url.path
             if path in {"/", "/index.html"}:
                 self._send_file(STATIC_DIR / "index.html")
             elif path == "/app.css":
@@ -227,7 +220,7 @@ def create_handler(config: Config, fleet: ControlFleet):
             elif path == "/api/session":
                 self._send_json(
                     HTTPStatus.OK,
-                    {"ok": True, "authenticated": self._authenticated(), "totp_required": totp is not None},
+                    {"ok": True, "authenticated": self._authenticated()},
                 )
             elif path == "/api/overview":
                 if self._require_auth():
@@ -235,6 +228,25 @@ def create_handler(config: Config, fleet: ControlFleet):
             elif path == "/api/configuration":
                 if self._require_auth():
                     self._handle(fleet.configuration)
+            elif (route := self._target_route(path)) is not None and route[1] == "activity":
+                if not self._require_auth():
+                    return
+                target_id, _ = route
+                try:
+                    controller = fleet.controller(target_id)
+                except KeyError as exc:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": str(exc)})
+                    return
+                query = parse_qs(parsed_url.query, keep_blank_values=True)
+                try:
+                    source = query.get("source", ["all"])[0]
+                    outcome = query.get("outcome", ["all"])[0]
+                    offset = int(query.get("offset", ["0"])[0])
+                    limit = int(query.get("limit", ["50"])[0])
+                except ValueError:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "activity pagination is invalid"})
+                    return
+                self._handle(lambda: controller.activity_history(source, outcome, offset, limit))
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -313,6 +325,7 @@ def create_handler(config: Config, fleet: ControlFleet):
                         stop_time=body.get("stop"),
                         weekdays=body.get("weekdays"),
                         timezone_name=body.get("timezone"),
+                        days=body.get("days"),
                     )
                 )
             elif action == "threshold":
@@ -353,8 +366,7 @@ def create_handler(config: Config, fleet: ControlFleet):
             if not limiter.allowed(address):
                 self._send_json(HTTPStatus.TOO_MANY_REQUESTS, {"ok": False, "error": "Too many login attempts"})
                 return
-            supplied = str(body.get("token", ""))
-            valid = hmac.compare_digest(supplied, config.control_token) and self._totp_valid(body.get("totp"))
+            valid = self._totp_valid(body.get("totp"))
             if not valid:
                 limiter.failed(address)
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "Invalid credentials"})

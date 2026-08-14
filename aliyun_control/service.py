@@ -9,9 +9,9 @@ import os
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, time as datetime_time, timedelta, timezone
+from datetime import datetime, time as datetime_time, timedelta, timezone, tzinfo
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Set
 
 try:
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -35,8 +35,12 @@ from .config import (
     _nonempty,
     _timezone_value,
 )
+from .config import UTC_OFFSET_PATTERN
 
 LOG = logging.getLogger(__name__)
+ACTIVITY_HISTORY_DAYS = 5
+ACTIVITY_SOURCES = {"all", "traffic", "schedule", "manual", "config"}
+ACTIVITY_OUTCOMES = {"all", "success", "skipped", "failed"}
 
 
 def utc_now() -> str:
@@ -62,7 +66,18 @@ class StateStore:
         return {"targets": {}}
 
     def target(self, target: TargetConfig) -> Dict[str, Any]:
-        defaults = {
+        defaults = self._defaults(target)
+        stored = self.load_all().get("targets", {}).get(target.id, {})
+        if isinstance(stored, dict):
+            defaults.update(stored)
+        if not isinstance(defaults.get("activity_history"), list):
+            defaults["activity_history"] = []
+        defaults["schedule_days"] = EcsController.schedule_days(defaults)
+        return defaults
+
+    @staticmethod
+    def _defaults(target: TargetConfig) -> Dict[str, Any]:
+        return {
             "auto_enabled": target.auto_enabled_default,
             "schedule_enabled": target.schedule_enabled_default,
             "schedule_start": target.schedule_start_default,
@@ -74,11 +89,33 @@ class StateStore:
             "last_action": None,
             "last_result": None,
             "last_traffic_gb": None,
+            "activity_history": [],
         }
-        stored = self.load_all().get("targets", {}).get(target.id, {})
+
+    def _target_from_payload(self, target: TargetConfig, payload: Dict[str, Any]) -> Dict[str, Any]:
+        state = self._defaults(target)
+        stored = payload.get("targets", {}).get(target.id, {})
         if isinstance(stored, dict):
-            defaults.update(stored)
-        return defaults
+            state.update(stored)
+        if not isinstance(state.get("activity_history"), list):
+            state["activity_history"] = []
+        state["schedule_days"] = EcsController.schedule_days(state)
+        return state
+
+    @staticmethod
+    def _recent_history(history: object) -> List[Dict[str, Any]]:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=ACTIVITY_HISTORY_DAYS)
+        kept: List[Dict[str, Any]] = []
+        for item in history if isinstance(history, list) else []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                at = datetime.fromisoformat(str(item.get("at", "")).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if at.tzinfo is not None and at.astimezone(timezone.utc) >= cutoff:
+                kept.append(item)
+        return kept
 
     def update_target(self, target: TargetConfig, **changes: Any) -> Dict[str, Any]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,8 +123,34 @@ class StateStore:
             with self.lock_path.open("a", encoding="utf-8") as lock_handle:
                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
                 payload = self.load_all()
-                current = self.target(target)
+                current = self._target_from_payload(target, payload)
                 current.update(changes)
+                payload.setdefault("targets", {})[target.id] = current
+                self._save(payload)
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                return current
+
+    def record_activity(
+        self,
+        target: TargetConfig,
+        action: str,
+        result: str,
+        outcome: str = "success",
+        **changes: Any,
+    ) -> Dict[str, Any]:
+        if outcome not in {"success", "skipped", "failed"}:
+            raise ValueError("activity outcome is invalid")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        event = {"at": utc_now(), "action": action, "result": result, "outcome": outcome}
+        with self._thread_lock:
+            with self.lock_path.open("a", encoding="utf-8") as lock_handle:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                payload = self.load_all()
+                current = self._target_from_payload(target, payload)
+                history = self._recent_history(current["activity_history"])
+                current.update(changes)
+                current.update(last_check=event["at"], last_action=action, last_result=result)
+                current["activity_history"] = history + [event]
                 payload.setdefault("targets", {})[target.id] = current
                 self._save(payload)
                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
@@ -213,16 +276,20 @@ class EcsController:
             "schedule_next_at": next_event["at"] if next_event else None,
             "schedule_next_action": next_event["action"] if next_event else None,
             **state,
+            "activity_history": list(reversed(state.get("activity_history", [])[-10:])),
         }
 
-    def _record(self, action: str, result: str, **extra: Any) -> None:
-        self.state.update_target(
+    def _record(self, action: str, result: str, outcome: str = "success", **extra: Any) -> None:
+        self.state.record_activity(
             self.target,
-            last_check=utc_now(),
-            last_action=action,
-            last_result=result,
+            action,
+            result,
+            outcome,
             **extra,
         )
+
+    def record_failure(self, action: str, error: Exception) -> None:
+        self._record(action, str(error), "failed")
 
     def _ensure_power_locked(self, decision: str) -> Dict[str, Any]:
         before = self.get_status()
@@ -247,31 +314,47 @@ class EcsController:
 
     def start(self) -> Dict[str, Any]:
         with self.exclusive():
-            result = self._ensure_power_locked("start")
-            self._record("start", result["message"])
-            return {"target_id": self.target.id, **result}
+            try:
+                result = self._ensure_power_locked("start")
+                self._record("start", result["message"])
+                return {"target_id": self.target.id, **result}
+            except Exception as exc:
+                self._record("start", str(exc), "failed")
+                raise
 
     def stop(self) -> Dict[str, Any]:
         with self.exclusive():
-            result = self._ensure_power_locked("stop")
-            self._record("stop", result["message"])
-            return {"target_id": self.target.id, **result}
+            try:
+                result = self._ensure_power_locked("stop")
+                self._record("stop", result["message"])
+                return {"target_id": self.target.id, **result}
+            except Exception as exc:
+                self._record("stop", str(exc), "failed")
+                raise
 
     def set_auto(self, enabled: bool) -> Dict[str, Any]:
         with self.exclusive():
-            return self.state.update_target(
+            return self.state.record_activity(
                 self.target,
+                "auto_enabled" if enabled else "auto_disabled",
+                "Automatic traffic policy enabled" if enabled else "Automatic traffic policy paused",
                 auto_enabled=enabled,
-                last_check=utc_now(),
-                last_action="auto_enabled" if enabled else "auto_disabled",
-                last_result="Automatic traffic policy enabled" if enabled else "Automatic traffic policy paused",
             )
 
     @staticmethod
-    def _schedule_timezone(value: object) -> ZoneInfo:
+    def _schedule_timezone(value: object) -> tzinfo:
         name = str(value or "").strip()
         if not name:
             raise ValueError("schedule timezone cannot be empty")
+        match = UTC_OFFSET_PATTERN.fullmatch(name)
+        if match:
+            hours, minutes = int(match.group(2)), int(match.group(3))
+            if hours == 14 and minutes:
+                raise ValueError("schedule UTC offset must not exceed 14 hours")
+            offset = timedelta(hours=hours, minutes=minutes)
+            if match.group(1) == "-":
+                offset = -offset
+            return timezone(offset, name)
         try:
             return ZoneInfo(name)
         except ZoneInfoNotFoundError as exc:
@@ -298,6 +381,66 @@ class EcsController:
             raise ValueError("schedule weekdays cannot contain duplicates")
         return sorted(value)
 
+    @staticmethod
+    def _schedule_weekday_set(value: object) -> Set[int]:
+        """Read persisted legacy weekdays, where an empty list means no active day."""
+        if not isinstance(value, list):
+            raise ValueError("schedule weekdays must be an array")
+        if any(isinstance(day, bool) or not isinstance(day, int) or not 0 <= day <= 6 for day in value):
+            raise ValueError("schedule weekdays must contain integers between 0 and 6")
+        if len(set(value)) != len(value):
+            raise ValueError("schedule weekdays cannot contain duplicates")
+        return set(value)
+
+    @classmethod
+    def schedule_days(cls, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        fallback_enabled = cls._schedule_weekday_set(state.get("schedule_weekdays", list(range(7))))
+        fallback_start = cls._schedule_time(state.get("schedule_start", "08:00"), "schedule start")
+        fallback_stop = cls._schedule_time(state.get("schedule_stop", "23:00"), "schedule stop")
+        rows = state.get("schedule_days")
+        parsed: Dict[int, Dict[str, Any]] = {}
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                day = row.get("weekday")
+                if isinstance(day, int) and not isinstance(day, bool) and 0 <= day <= 6 and day not in parsed:
+                    parsed[day] = {
+                        "weekday": day,
+                        "enabled": bool(row.get("enabled", False)),
+                        "start": cls._schedule_time(row.get("start", fallback_start), "schedule start"),
+                        "stop": cls._schedule_time(row.get("stop", fallback_stop), "schedule stop"),
+                    }
+        return [
+            parsed.get(day, {"weekday": day, "enabled": day in fallback_enabled, "start": fallback_start, "stop": fallback_stop})
+            for day in range(7)
+        ]
+
+    @classmethod
+    def _validate_schedule_days(cls, value: object, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if value is None:
+            return cls.schedule_days(state)
+        if not isinstance(value, list) or len(value) != 7:
+            raise ValueError("schedule days must contain all seven weekdays")
+        rows: Dict[int, Dict[str, Any]] = {}
+        for row in value:
+            if not isinstance(row, dict):
+                raise ValueError("schedule day must be an object")
+            day = row.get("weekday")
+            if isinstance(day, bool) or not isinstance(day, int) or not 0 <= day <= 6 or day in rows:
+                raise ValueError("schedule day weekday is invalid")
+            enabled = row.get("enabled")
+            if not isinstance(enabled, bool):
+                raise ValueError("schedule day enabled must be a boolean")
+            start = cls._schedule_time(row.get("start"), "schedule start")
+            stop = cls._schedule_time(row.get("stop"), "schedule stop")
+            if start == stop:
+                raise ValueError("schedule start and stop times must differ")
+            rows[day] = {"weekday": day, "enabled": enabled, "start": start, "stop": stop}
+        if set(rows) != set(range(7)):
+            raise ValueError("schedule days must contain all seven weekdays")
+        return [rows[day] for day in range(7)]
+
     def set_schedule(
         self,
         enabled: bool,
@@ -305,39 +448,48 @@ class EcsController:
         stop_time: Optional[object] = None,
         weekdays: Optional[object] = None,
         timezone_name: Optional[object] = None,
+        days: Optional[object] = None,
     ) -> Dict[str, Any]:
         if not isinstance(enabled, bool):
             raise ValueError("schedule enabled must be a boolean")
         with self.exclusive():
             state = self.state.target(self.target)
-            start = self._schedule_time(
-                state["schedule_start"] if start_time is None else start_time,
-                "schedule start",
-            )
-            stop = self._schedule_time(
-                state["schedule_stop"] if stop_time is None else stop_time,
-                "schedule stop",
-            )
-            if start == stop:
-                raise ValueError("schedule start and stop times must differ")
-            selected_days = self._schedule_weekdays(
-                state["schedule_weekdays"] if weekdays is None else weekdays
-            )
+            if days is None:
+                start = self._schedule_time(state["schedule_start"] if start_time is None else start_time, "schedule start")
+                stop = self._schedule_time(state["schedule_stop"] if stop_time is None else stop_time, "schedule stop")
+                if start == stop:
+                    raise ValueError("schedule start and stop times must differ")
+                selected_days = sorted(self._schedule_weekday_set(
+                    state["schedule_weekdays"] if weekdays is None else weekdays
+                ))
+                if enabled and not selected_days:
+                    raise ValueError("schedule weekdays must be a non-empty array")
+                schedule_days = [
+                    {"weekday": day, "enabled": day in selected_days, "start": start, "stop": stop}
+                    for day in range(7)
+                ]
+            else:
+                schedule_days = self._validate_schedule_days(days, state)
+                enabled_days = [row for row in schedule_days if row["enabled"]]
+                if enabled and not enabled_days:
+                    raise ValueError("enable at least one schedule day")
+                start, stop = schedule_days[0]["start"], schedule_days[0]["stop"]
+                selected_days = [row["weekday"] for row in enabled_days]
             timezone_value = str(
                 state["schedule_timezone"] if timezone_name is None else timezone_name
             ).strip()
             self._schedule_timezone(timezone_value)
-            return self.state.update_target(
+            return self.state.record_activity(
                 self.target,
+                "schedule_enabled" if enabled else "schedule_disabled",
+                "Power schedule enabled" if enabled else "Power schedule paused",
                 schedule_enabled=enabled,
                 schedule_start=start,
                 schedule_stop=stop,
                 schedule_weekdays=selected_days,
                 schedule_timezone=timezone_value,
+                schedule_days=schedule_days,
                 last_schedule_event=None,
-                last_check=utc_now(),
-                last_action="schedule_enabled" if enabled else "schedule_disabled",
-                last_result="Power schedule enabled" if enabled else "Power schedule paused",
             )
 
     def next_schedule_event(
@@ -350,15 +502,15 @@ class EcsController:
             return None
         zone = self._schedule_timezone(state["schedule_timezone"])
         local_now = self._local_schedule_time(now, zone)
-        weekdays = set(self._schedule_weekdays(state["schedule_weekdays"]))
-        start_time = datetime_time.fromisoformat(self._schedule_time(state["schedule_start"], "schedule start"))
-        stop_time = datetime_time.fromisoformat(self._schedule_time(state["schedule_stop"], "schedule stop"))
-        overnight = start_time >= stop_time
         candidates = []
         for offset in range(-1, 8):
             start_date = (local_now + timedelta(days=offset)).date()
-            if start_date.weekday() not in weekdays:
+            row = self.schedule_days(state)[start_date.weekday()]
+            if not row["enabled"]:
                 continue
+            start_time = datetime_time.fromisoformat(row["start"])
+            stop_time = datetime_time.fromisoformat(row["stop"])
+            overnight = start_time >= stop_time
             start_at = datetime.combine(start_date, start_time, tzinfo=zone)
             stop_date = start_date + timedelta(days=1) if overnight else start_date
             stop_at = datetime.combine(stop_date, stop_time, tzinfo=zone)
@@ -372,7 +524,7 @@ class EcsController:
         return {"at": candidate.isoformat(timespec="minutes"), "action": action}
 
     @staticmethod
-    def _local_schedule_time(now: Optional[datetime], zone: ZoneInfo) -> datetime:
+    def _local_schedule_time(now: Optional[datetime], zone: tzinfo) -> datetime:
         if now is None:
             return datetime.now(zone)
         if now.tzinfo is None:
@@ -389,52 +541,62 @@ class EcsController:
             return True
         zone = self._schedule_timezone(state["schedule_timezone"])
         local_now = self._local_schedule_time(now, zone)
-        weekdays = set(self._schedule_weekdays(state["schedule_weekdays"]))
-        start = datetime_time.fromisoformat(self._schedule_time(state["schedule_start"], "schedule start"))
-        stop = datetime_time.fromisoformat(self._schedule_time(state["schedule_stop"], "schedule stop"))
         current = local_now.timetz().replace(tzinfo=None)
-        if start < stop:
-            return local_now.weekday() in weekdays and start <= current < stop
-        if current >= start:
-            return local_now.weekday() in weekdays
-        previous_day = (local_now - timedelta(days=1)).weekday()
-        return current < stop and previous_day in weekdays
+        today = self.schedule_days(state)[local_now.weekday()]
+        if today["enabled"]:
+            start = datetime_time.fromisoformat(today["start"])
+            stop = datetime_time.fromisoformat(today["stop"])
+            if start < stop and start <= current < stop:
+                return True
+            if start >= stop and current >= start:
+                return True
+        previous = self.schedule_days(state)[(local_now - timedelta(days=1)).weekday()]
+        if previous["enabled"]:
+            previous_start = datetime_time.fromisoformat(previous["start"])
+            previous_stop = datetime_time.fromisoformat(previous["stop"])
+            if previous_start >= previous_stop and current < previous_stop:
+                return True
+        return False
 
     def check_schedule(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         state = self.state.target(self.target)
         if not state["schedule_enabled"]:
+            self._record("schedule_check", "Power schedule is paused", "skipped")
             return {"target_id": self.target.id, "skipped": True, "message": "Power schedule is paused"}
         zone = self._schedule_timezone(state["schedule_timezone"])
         local_now = self._local_schedule_time(now, zone)
         current_time = local_now.strftime("%H:%M")
-        start_time = state["schedule_start"]
-        stop_time = state["schedule_stop"]
-        overnight = start_time >= stop_time
-        weekdays = set(self._schedule_weekdays(state["schedule_weekdays"]))
-        if current_time == state["schedule_start"]:
-            if local_now.weekday() not in weekdays:
-                return {"target_id": self.target.id, "skipped": True, "message": "Today is not scheduled"}
-            decision = "start"
-        elif current_time == state["schedule_stop"]:
-            schedule_day = (local_now - timedelta(days=1)).weekday() if overnight else local_now.weekday()
-            if schedule_day not in weekdays:
-                return {"target_id": self.target.id, "skipped": True, "message": "Today is not scheduled"}
-            decision = "stop"
-        else:
+        events = []
+        for offset in (0, -1):
+            start_date = (local_now + timedelta(days=offset)).date()
+            row = self.schedule_days(state)[start_date.weekday()]
+            if not row["enabled"]:
+                continue
+            start_time = datetime_time.fromisoformat(row["start"])
+            stop_time = datetime_time.fromisoformat(row["stop"])
+            stop_date = start_date + timedelta(days=1) if start_time >= stop_time else start_date
+            if offset == 0 and current_time == row["start"]:
+                events.append(("start", row))
+            if stop_date == local_now.date() and current_time == row["stop"]:
+                events.append(("stop", row))
+        if not events:
+            self._record("schedule_check", "No schedule event is due", "skipped")
             return {"target_id": self.target.id, "skipped": True, "message": "No schedule event is due"}
-        event_key = f"{local_now.date().isoformat()}:{current_time}:{decision}"
+        decision, row = events[0]
+        event_key = f"{local_now.date().isoformat()}:{current_time}:{row['weekday']}:{decision}"
         with self.exclusive():
             locked_state = self.state.target(self.target)
             if locked_state.get("last_schedule_event") == event_key:
+                self._record("schedule_check", "Schedule event was already handled", "skipped")
                 return {"target_id": self.target.id, "skipped": True, "message": "Schedule event was already handled"}
-            action = self._ensure_power_locked(decision)
-            self.state.update_target(
-                self.target,
-                last_schedule_event=event_key,
-                last_check=utc_now(),
-                last_action=f"schedule_{decision}",
-                last_result=action["message"],
-            )
+            try:
+                action = self._ensure_power_locked(decision)
+                self.state.record_activity(
+                    self.target, f"schedule_{decision}", action["message"], last_schedule_event=event_key
+                )
+            except Exception as exc:
+                self._record(f"schedule_{decision}", str(exc), "failed")
+                raise
         return {
             "target_id": self.target.id,
             "skipped": False,
@@ -444,15 +606,55 @@ class EcsController:
             **action,
         }
 
+    @staticmethod
+    def _activity_source(action: object) -> str:
+        value = str(action or "")
+        if value.startswith("traffic_"):
+            return "traffic"
+        if value.startswith("schedule_"):
+            return "schedule"
+        if value in {"start", "stop"}:
+            return "manual"
+        return "config"
+
+    def activity_history(self, source: str = "all", outcome: str = "all", offset: int = 0, limit: int = 50) -> Dict[str, Any]:
+        if source not in ACTIVITY_SOURCES:
+            raise ValueError("activity source is invalid")
+        if outcome not in ACTIVITY_OUTCOMES:
+            raise ValueError("activity outcome is invalid")
+        if not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("activity limit is invalid")
+        state = self.state.target(self.target)
+        history = list(reversed(self.state._recent_history(state.get("activity_history", []))))
+        if not isinstance(offset, int) or not 0 <= offset <= len(history):
+            raise ValueError("activity offset is invalid")
+        filtered = [
+            item for item in history
+            if (source == "all" or self._activity_source(item.get("action")) == source)
+            and (outcome == "all" or item.get("outcome") == outcome)
+        ]
+        page = filtered[offset:offset + limit]
+        return {
+            "items": page,
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(page) < len(filtered),
+        }
+
     def check_policy(self, force: bool = False) -> Dict[str, Any]:
         state = self.state.target(self.target)
         if not state["auto_enabled"] and not force:
+            self._record("traffic_check", "Automatic traffic policy is paused", "skipped")
             return {"target_id": self.target.id, "skipped": True, "message": "Automatic traffic policy is paused"}
         with self.exclusive():
-            traffic = self.get_traffic_gb()
-            decision = "start" if traffic < self.target.traffic_threshold_gb else "stop"
-            action = self._ensure_power_locked(decision)
-            self._record(decision, action["message"], last_traffic_gb=round(traffic, 2))
+            try:
+                traffic = self.get_traffic_gb()
+                decision = "start" if traffic < self.target.traffic_threshold_gb else "stop"
+                action = self._ensure_power_locked(decision)
+                self._record(f"traffic_{decision}", action["message"], last_traffic_gb=round(traffic, 2))
+            except Exception as exc:
+                self._record("traffic_check", str(exc), "failed")
+                raise
         return {
             "target_id": self.target.id,
             "skipped": False,
@@ -467,6 +669,7 @@ class EcsController:
         schedule_enabled = bool(state["schedule_enabled"])
         traffic_enabled = bool(state["auto_enabled"] or force_traffic)
         if not schedule_enabled and not traffic_enabled:
+            self._record("automation_check", "Automation is paused", "skipped")
             return {"target_id": self.target.id, "skipped": True, "message": "Automation is paused"}
         if schedule_enabled and not traffic_enabled:
             return self.check_schedule(now=now)
@@ -480,11 +683,7 @@ class EcsController:
                 try:
                     traffic = self.get_traffic_gb()
                 except Exception as exc:
-                    self.state.update_target(
-                        self.target,
-                        last_check=utc_now(),
-                        last_result=f"Traffic query failed; power state unchanged: {exc}",
-                    )
+                    self._record("traffic_check", f"Traffic query failed; power state unchanged: {exc}", "failed")
                     return {
                         "target_id": self.target.id,
                         "skipped": True,
@@ -498,16 +697,16 @@ class EcsController:
             else:
                 decision = "stop"
                 reason = "outside_schedule_window"
-            action = self._ensure_power_locked(decision)
-            changes: Dict[str, Any] = {
-                "last_check": utc_now(),
-                "last_result": action["message"],
-            }
-            if traffic is not None:
-                changes["last_traffic_gb"] = round(traffic, 2)
-            if action["changed"]:
-                changes["last_action"] = f"combined_{decision}"
-            self.state.update_target(self.target, **changes)
+            try:
+                action = self._ensure_power_locked(decision)
+                changes: Dict[str, Any] = {}
+                if traffic is not None:
+                    changes["last_traffic_gb"] = round(traffic, 2)
+                action_name = f"traffic_{decision}" if in_window else f"schedule_{decision}"
+                self._record(action_name, action["message"], **changes)
+            except Exception as exc:
+                self._record("traffic_check" if in_window else "schedule_check", str(exc), "failed")
+                raise
         return {
             "target_id": self.target.id,
             "skipped": False,
@@ -821,5 +1020,6 @@ class ControlFleet:
                 results.append({"target_id": target_id, "automation": controller.check_automation(now=check_time)})
             except Exception as exc:
                 LOG.exception("Automation check failed for %s", target_id)
+                controller.record_failure("automation_check", exc)
                 results.append({"target_id": target_id, "error": str(exc)})
         return {"targets": results}
