@@ -135,6 +135,9 @@ class Config:
     managed_config_path: Optional[Path] = None
     credential_key_path: Optional[Path] = None
     audit_path: Optional[Path] = None
+    passkey_path: Optional[Path] = None
+    passkey_rp_id: str = "ali.hkz.241214.top"
+    passkey_origin: str = "https://ali.hkz.241214.top"
 
     @classmethod
     def from_env(cls, require_web_token: bool = True) -> "Config":
@@ -175,6 +178,9 @@ class Config:
             managed_config_path=managed_config_path,
             credential_key_path=credential_key_path,
             audit_path=Path(os.getenv("AUDIT_PATH", "/var/lib/aliyun-ecs-control/audit.log")),
+            passkey_path=Path(os.getenv("PASSKEY_PATH", "/var/lib/aliyun-ecs-control/passkeys.json")),
+            passkey_rp_id=os.getenv("PASSKEY_RP_ID", "ali.hkz.241214.top").strip(),
+            passkey_origin=os.getenv("PASSKEY_ORIGIN", "https://ali.hkz.241214.top").strip(),
         )
 
 

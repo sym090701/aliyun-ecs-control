@@ -31,6 +31,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .brand-mark.small { width: 38px; height: 38px; font-size: 12px; }
 .login-panel h1 { margin: 24px 0 5px; font-size: 27px; line-height: 1.2; }
 .login-panel p { margin: 0 0 28px; color: var(--muted); font-size: 14px; }
+.login-actions { display: grid; gap: 10px; }
+.management-hint { margin: -8px 0 16px; color: var(--muted); font-size: 13px; }
 .login-panel label { display: block; margin: 0 0 8px; color: #3d474d; font-size: 13px; font-weight: 700; }
 .login-panel input { width: 100%; height: 46px; margin-bottom: 17px; padding: 0 13px; border: 1px solid #bcc7cc; border-radius: 6px; outline: none; }
 .login-panel input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }

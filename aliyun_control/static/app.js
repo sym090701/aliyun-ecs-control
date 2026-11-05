@@ -1,5 +1,5 @@
 const elements = Object.fromEntries([
-  "login-view", "dashboard-view", "login-form", "login-error", "totp",
+  "login-view", "dashboard-view", "login-form", "login-error", "totp", "passkey-login",
   "fleet-meta", "fleet-count", "target-list", "target-account", "target-name", "target-meta",
   "status-heading", "status-dot", "traffic-heading", "traffic-threshold", "traffic-percent",
   "traffic-progress", "traffic-error", "threshold-form", "threshold-input", "threshold-save",
@@ -7,7 +7,7 @@ const elements = Object.fromEntries([
   "auto-toggle", "check-button", "operation-state", "last-check", "activity-list", "banner", "stop-dialog", "stop-target-name", "confirm-stop",
   "schedule-form", "schedule-toggle", "schedule-days", "schedule-timezone", "schedule-bulk-start", "schedule-bulk-stop", "schedule-bulk-apply",
   "schedule-next", "schedule-save", "fleet-view", "target-detail", "management-view", "management-close",
-  "account-list", "instance-list", "account-add", "instance-add", "account-dialog", "account-form",
+  "account-list", "instance-list", "passkey-list", "account-add", "instance-add", "passkey-add", "account-dialog", "account-form",
   "account-dialog-title", "account-id", "account-name", "account-key-id", "account-key-secret",
   "account-totp", "account-error", "account-test", "account-save", "instance-dialog", "instance-form",
   "instance-dialog-title", "instance-key", "instance-name", "instance-account", "instance-region",
@@ -29,6 +29,50 @@ let activityTargetId = null;
 let activityOffset = 0;
 let activityHasMore = false;
 let activityLoading = false;
+
+function base64urlToBytes(value) {
+  const text = String(value);
+  const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (text.length % 4)) % 4));
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+function bytesToBase64url(value) {
+  const bytes = new Uint8Array(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function prepareCreationOptions(options) {
+  return {
+    ...options,
+    challenge: base64urlToBytes(options.challenge),
+    user: { ...options.user, id: base64urlToBytes(options.user.id) },
+    excludeCredentials: (options.excludeCredentials || []).map((item) => ({ ...item, id: base64urlToBytes(item.id) })),
+  };
+}
+
+function prepareRequestOptions(options) {
+  return {
+    ...options,
+    challenge: base64urlToBytes(options.challenge),
+    allowCredentials: (options.allowCredentials || []).map((item) => ({ ...item, id: base64urlToBytes(item.id) })),
+  };
+}
+
+function serializeCredential(credential) {
+  const response = credential.response;
+  const result = {
+    id: credential.id,
+    rawId: bytesToBase64url(credential.rawId),
+    type: credential.type,
+    response: {},
+  };
+  for (const key of ["clientDataJSON", "attestationObject", "authenticatorData", "signature", "userHandle"]) {
+    if (response[key]) result.response[key] = bytesToBase64url(response[key]);
+  }
+  return result;
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -378,6 +422,70 @@ function renderManagement() {
   elements.instanceAdd.disabled = accounts.length === 0;
 }
 
+function renderPasskeys(passkeys = []) {
+  elements.passkeyList.replaceChildren(...(passkeys.length ? passkeys.map((item) => managementRow(
+    item.name || "Passkey",
+    `创建于 ${formatTime(item.created_at)} · 最近使用 ${formatTime(item.last_used_at)}`,
+    [makeButton("撤销", "quiet", () => revokePasskey(item))],
+  )) : [emptyState("尚未注册 Passkey") ]));
+}
+
+async function refreshPasskeys() {
+  const data = await api("/api/passkeys");
+  renderPasskeys(data);
+}
+
+async function registerPasskey() {
+  const name = window.prompt("给这个 Passkey 起个名字，例如：MacBook Touch ID");
+  if (!name) return;
+  const totp = window.prompt("请输入当前六位动态验证码");
+  if (!totp) return;
+  try {
+    const options = await api("/api/passkeys/register/options", { method: "POST", body: JSON.stringify({ name, totp }) });
+    const credential = await navigator.credentials.create({ publicKey: prepareCreationOptions(options) });
+    if (!credential) throw new Error("Passkey 注册被取消");
+    await api("/api/passkeys/register/verify", { method: "POST", body: JSON.stringify({ name, credential: serializeCredential(credential) }) });
+    await refreshPasskeys();
+    showBanner("Passkey 已添加");
+  } catch (error) {
+    showBanner(error.message, true);
+  }
+}
+
+async function revokePasskey(item) {
+  const totp = window.prompt(`请输入当前动态验证码以撤销“${item.name || "Passkey"}”`);
+  if (!totp) return;
+  try {
+    await api(`/api/passkeys/${encodeURIComponent(item.credential_id)}`, { method: "DELETE", body: JSON.stringify({ totp }) });
+    await refreshPasskeys();
+    showBanner("Passkey 已撤销");
+  } catch (error) {
+    showBanner(error.message, true);
+  }
+}
+
+async function loginWithPasskey() {
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    elements.loginError.textContent = "当前浏览器不支持 Passkey，请使用动态验证码登录";
+    return;
+  }
+  const button = elements.passkeyLogin;
+  button.disabled = true;
+  elements.loginError.textContent = "";
+  try {
+    const options = await api("/api/passkeys/login/options", { method: "POST", body: "{}" });
+    const credential = await navigator.credentials.get({ publicKey: prepareRequestOptions(options) });
+    if (!credential) throw new Error("Passkey 登录被取消");
+    await api("/api/passkeys/login/verify", { method: "POST", body: JSON.stringify({ credential: serializeCredential(credential) }) });
+    showDashboard();
+    await refresh();
+  } catch (error) {
+    elements.loginError.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function refreshConfiguration() {
   configuration = await api("/api/configuration");
   renderManagement();
@@ -391,6 +499,7 @@ async function setManagementView(open) {
   if (open) {
     try {
       await refreshConfiguration();
+      await refreshPasskeys();
       showBanner("");
     } catch (error) {
       showBanner(error.message, true);
@@ -570,6 +679,8 @@ elements.manageButton.addEventListener("click", () => setManagementView(!managem
 elements.managementClose.addEventListener("click", () => setManagementView(false));
 elements.accountAdd.addEventListener("click", () => openAccountDialog());
 elements.instanceAdd.addEventListener("click", () => openInstanceDialog());
+elements.passkeyAdd.addEventListener("click", registerPasskey);
+elements.passkeyLogin.addEventListener("click", loginWithPasskey);
 for (const button of document.querySelectorAll("[data-close-dialog]")) {
   button.addEventListener("click", () => document.querySelector(`#${button.dataset.closeDialog}`).close());
 }

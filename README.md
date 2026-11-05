@@ -14,6 +14,7 @@
 - 每台实例按星期逐日设置独立的启动时间、停止时间和 IANA 时区，并可批量调整所选日期的时间；
 - 每台实例可在主页面手动调整流量阈值，并单独启停自动策略；
 - 定时计划与流量策略可独立使用或联合运行，策略记录按来源和结果筛选；每台实例保留最近五天记录；
+- Passkey 登录（WebAuthn）、多设备 Passkey 管理和 TOTP 恢复登录；
 - 六位 TOTP 登录、随机会话 Cookie、登录限速和同源检查；
 - systemd Web 服务和每分钟自动化定时器；
 - CLI 支持状态查询、开关机、策略和计划管理。
@@ -42,7 +43,7 @@ Web 服务和自动化任务都以专用的 `aliyun-ecs-control` 用户运行。
 ## 环境要求
 
 - Debian 或 Ubuntu，使用 systemd；
-- Python 3.8 或更高版本；
+- Python 3.10 或更高版本；
 - `python3-venv`；
 - 公网使用时需要 Caddy 或 Nginx 与有效 TLS 证书；
 - 一个或多个阿里云 RAM 用户的 AccessKey。
@@ -149,8 +150,9 @@ systemd timer 每分钟检查一次。同一实例、日期、分钟和动作只
 5. 设置 `TRUST_PROXY=true`；
 6. 配置 `TOTP_SECRET`；网页登录仅接受当前六位动态验证码；
 7. 保持 `/etc/aliyun-ecs-control.key` 仅对 root 和服务组可读；
-8. 使用最小权限 RAM 用户；
-9. 可在反向代理前增加 Cloudflare Access 或 VPN。
+8. Passkey 凭据保存在加密的 `PASSKEY_PATH` 文件中；
+9. 使用最小权限 RAM 用户；
+10. 可在反向代理前增加 Cloudflare Access 或 VPN。
 
 反向代理示例：
 

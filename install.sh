@@ -13,6 +13,7 @@ TARGETS_FILE=/etc/aliyun-ecs-control-targets.json
 MANAGED_CONFIG_PATH=/var/lib/aliyun-ecs-control/config.json
 CREDENTIAL_KEY_PATH=/etc/aliyun-ecs-control.key
 AUDIT_PATH=/var/lib/aliyun-ecs-control/audit.log
+PASSKEY_PATH=/var/lib/aliyun-ecs-control/passkeys.json
 SERVICE_USER=aliyun-ecs-control
 
 command -v python3 >/dev/null || { echo "python3 is required." >&2; exit 1; }
@@ -67,6 +68,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
     printf 'MANAGED_CONFIG_PATH=%s\n' "$MANAGED_CONFIG_PATH"
     printf 'CREDENTIAL_KEY_PATH=%s\n' "$CREDENTIAL_KEY_PATH"
     printf 'AUDIT_PATH=%s\n' "$AUDIT_PATH"
+    printf 'PASSKEY_PATH=%s\nPASSKEY_RP_ID=ali.hkz.241214.top\nPASSKEY_ORIGIN=https://ali.hkz.241214.top\n' "$PASSKEY_PATH"
     printf 'LISTEN_HOST=127.0.0.1\nLISTEN_PORT=8787\n'
     printf 'STATE_PATH=/var/lib/aliyun-ecs-control/state.json\nLOCK_DIR=/var/lib/aliyun-ecs-control/locks\n'
     printf 'SESSION_HOURS=8\nCOOKIE_SECURE=false\nTRUST_PROXY=false\n'
@@ -85,7 +87,10 @@ fi
 for SETTING in \
   "MANAGED_CONFIG_PATH=$MANAGED_CONFIG_PATH" \
   "CREDENTIAL_KEY_PATH=$CREDENTIAL_KEY_PATH" \
-  "AUDIT_PATH=$AUDIT_PATH"; do
+  "AUDIT_PATH=$AUDIT_PATH" \
+  "PASSKEY_PATH=$PASSKEY_PATH" \
+  "PASSKEY_RP_ID=ali.hkz.241214.top" \
+  "PASSKEY_ORIGIN=https://ali.hkz.241214.top"; do
   KEY=${SETTING%%=*}
   if ! grep -q "^${KEY}=" "$ENV_FILE"; then
     printf '%s\n' "$SETTING" >> "$ENV_FILE"

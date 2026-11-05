@@ -15,7 +15,10 @@
       <p>阿里云实例控制台</p>
       <label for="totp">动态验证码</label>
       <input id="totp" name="totp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required autofocus>
-      <button class="button primary wide" type="submit">登录</button>
+      <div class="login-actions">
+        <button class="button primary wide" type="submit">使用动态验证码登录</button>
+        <button id="passkey-login" class="button secondary wide" type="button">使用 Passkey 登录</button>
+      </div>
       <div id="login-error" class="form-error" role="alert"></div>
     </form>
   </main>
@@ -267,6 +270,18 @@
           <button id="instance-add" class="button primary" type="button">添加实例</button>
         </div>
         <div id="instance-list" class="management-list"></div>
+      </section>
+
+      <section class="management-section" aria-labelledby="passkeys-heading">
+        <div class="management-section-heading">
+          <div>
+            <p class="section-label">登录方式</p>
+            <h3 id="passkeys-heading">Passkey</h3>
+          </div>
+          <button id="passkey-add" class="button primary" type="button">添加 Passkey</button>
+        </div>
+        <p class="management-hint">添加和撤销 Passkey 需要当前动态验证码。建议至少保留两个不同设备的 Passkey。</p>
+        <div id="passkey-list" class="management-list"></div>
       </section>
     </section>
   </main>
