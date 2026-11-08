@@ -145,26 +145,43 @@ function formatScheduleTime(value, offset) {
   }).format(localDate);
 }
 
-function actionText(action, result) {
-  if (!action) return "暂无操作";
-  const actions = {
-    start: "启动实例", stop: "停止实例", auto_enabled: "启用自动策略", auto_disabled: "暂停自动策略",
-    schedule_enabled: "启用定时计划", schedule_disabled: "暂停定时计划",
-    schedule_start: "定时启动", schedule_stop: "定时停止",
-    traffic_start: "流量策略启动", traffic_stop: "流量策略停止",
-    traffic_check: "流量检查", schedule_check: "定时检查", automation_check: "自动化检查",
-  };
-  const results = {
-    "Start request accepted": "启动请求已提交",
-    "Graceful stop request accepted": "正常关机请求已提交",
-    "Instance is already running": "实例已在运行",
-    "Instance is already stopped": "实例已停止",
-    "Automatic traffic policy enabled": "自动策略已启用",
-    "Automatic traffic policy paused": "自动策略已暂停",
-    "Power schedule enabled": "定时计划已启用",
-    "Power schedule paused": "定时计划已暂停",
-  };
-  return `${actions[action] || action} · ${results[result] || result || "已完成"}`;
+const activityActions = {
+  start: "启动实例", stop: "停止实例", auto_enabled: "启用自动策略", auto_disabled: "暂停自动策略",
+  schedule_enabled: "启用定时计划", schedule_disabled: "暂停定时计划",
+  schedule_start: "定时启动", schedule_stop: "定时停止",
+  traffic_start: "流量策略启动", traffic_stop: "流量策略停止",
+  traffic_check: "流量检查", schedule_check: "定时检查", automation_check: "自动化检查",
+};
+
+const activitySources = {
+  traffic: "流量守护", schedule: "开关机计划", manual: "手动操作", config: "配置变更",
+};
+
+const activityResults = {
+  "Start request accepted": "启动请求已提交",
+  "Graceful stop request accepted": "正常关机请求已提交",
+  "Instance is already running": "实例已在运行",
+  "Instance is already stopped": "实例已停止",
+  "Automatic traffic policy enabled": "自动策略已启用",
+  "Automatic traffic policy paused": "自动策略已暂停",
+  "Power schedule enabled": "定时计划已启用",
+  "Power schedule paused": "定时计划已暂停",
+};
+
+function activitySource(action) {
+  const value = String(action || "");
+  if (value.startsWith("traffic_")) return "traffic";
+  if (value.startsWith("schedule_")) return "schedule";
+  if (value === "start" || value === "stop") return "manual";
+  return "config";
+}
+
+function activityActionText(action) {
+  return activityActions[action] || action || "暂无操作";
+}
+
+function activityResultText(result) {
+  return activityResults[result] || result || "已完成";
 }
 
 function activityOutcomeText(outcome) {
@@ -175,17 +192,43 @@ function renderActivity(history = activityHistory) {
   activityHistory = Array.isArray(history) ? history : [];
   elements.activityList.replaceChildren(...activityHistory.map((entry) => {
     const row = document.createElement("li");
-    row.className = "activity-row";
+    const outcomeValue = entry.outcome || "unknown";
+    const sourceValue = activitySource(entry.action);
+    const sourceText = activitySources[sourceValue] || "系统";
+    const actionText = activityActionText(entry.action);
+    const resultText = activityResultText(entry.result);
+    row.className = `activity-row ${outcomeValue}`;
+    row.setAttribute("aria-label", `${sourceText}，${actionText}，${resultText}，${activityOutcomeText(outcomeValue)}`);
+    const marker = document.createElement("span");
+    marker.className = "activity-marker";
+    marker.setAttribute("aria-hidden", "true");
     const copy = document.createElement("div");
+    copy.className = "activity-copy";
+    const heading = document.createElement("div");
+    heading.className = "activity-row-heading";
+    const source = document.createElement("span");
+    source.className = `activity-source ${sourceValue}`;
+    source.textContent = sourceText;
     const title = document.createElement("strong");
-    title.textContent = actionText(entry.action, entry.result);
+    title.textContent = actionText;
+    heading.append(source, title);
+    const result = document.createElement("span");
+    result.className = "activity-result";
+    result.textContent = resultText;
     const time = document.createElement("time");
     time.textContent = formatTime(entry.at);
-    copy.append(title, time);
+    if (entry.at) {
+      time.dateTime = entry.at;
+      time.title = entry.at;
+    }
+    const meta = document.createElement("div");
+    meta.className = "activity-meta-line";
+    meta.append(time);
+    copy.append(heading, result, meta);
     const outcome = document.createElement("span");
-    outcome.className = `activity-outcome ${entry.outcome || "unknown"}`;
-    outcome.textContent = activityOutcomeText(entry.outcome);
-    row.append(copy, outcome);
+    outcome.className = `activity-outcome ${outcomeValue}`;
+    outcome.textContent = activityOutcomeText(outcomeValue);
+    row.append(marker, copy, outcome);
     return row;
   }));
   if (!activityHistory.length) {
@@ -194,7 +237,20 @@ function renderActivity(history = activityHistory) {
     empty.textContent = "暂无记录";
     elements.activityList.append(empty);
   }
-  elements.activityMeta.textContent = activityHistory.length ? `已显示 ${activityHistory.length} 条` : "";
+  if (activityHistory.length) {
+    const counts = activityHistory.reduce((summary, entry) => {
+      const key = ["success", "skipped", "failed"].includes(entry.outcome) ? entry.outcome : "unknown";
+      summary[key] = (summary[key] || 0) + 1;
+      return summary;
+    }, {});
+    const parts = [`已显示 ${activityHistory.length} 条`];
+    if (counts.success) parts.push(`成功 ${counts.success}`);
+    if (counts.skipped) parts.push(`未执行 ${counts.skipped}`);
+    if (counts.failed) parts.push(`失败 ${counts.failed}`);
+    elements.activityMeta.textContent = parts.join(" · ");
+  } else {
+    elements.activityMeta.textContent = "";
+  }
   elements.activityMore.hidden = !activityHasMore;
   elements.activityMore.disabled = activityLoading;
   elements.activityMore.textContent = activityLoading ? "加载中" : "加载更多";
