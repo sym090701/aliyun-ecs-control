@@ -14,6 +14,7 @@
   --shadow: 0 18px 44px rgba(25, 50, 64, 0.08);
   --shadow-soft: 0 8px 22px rgba(25, 50, 64, 0.06);
   --radius: 14px;
+  color-scheme: light dark;
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--ink);
   background: var(--bg);
@@ -312,4 +313,72 @@ button:not(:disabled):active { transform: translateY(1px) scale(.99); }
 
 @media (prefers-reduced-transparency: reduce) {
   .login-panel, .fleet-panel, .traffic-band, .control-panel, .policy-panel, .schedule-panel, .activity-row, .management-row { background: var(--surface); }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d151b;
+    --surface: #17232b;
+    --ink: #e7f0f4;
+    --muted: #9aadb7;
+    --line: #30434d;
+    --green: #38b982;
+    --green-soft: #153c31;
+    --red: #f07870;
+    --red-soft: #452522;
+    --blue: #63b9f2;
+    --blue-soft: #16384d;
+    --amber: #e7ad55;
+    --shadow: 0 18px 44px rgba(0, 0, 0, .34);
+    --shadow-soft: 0 8px 22px rgba(0, 0, 0, .24);
+  }
+
+  body { background: radial-gradient(circle at 10% 0%, #1d303b 0, transparent 32rem), var(--bg); }
+  .login-shell { background: radial-gradient(circle at 15% 10%, rgba(59, 137, 180, .22), transparent 24rem), radial-gradient(circle at 85% 90%, rgba(22, 102, 160, .18), transparent 28rem), #091217; }
+  .login-panel { border-color: #30434d; background: rgba(23, 35, 43, .96); box-shadow: 0 28px 80px rgba(0, 0, 0, .45); }
+  .login-panel label { color: #c9d6dc; }
+  .login-panel input, .threshold-input-row input, .schedule-toolbar input, .schedule-toolbar select, .schedule-bulk input, .schedule-day-row input[type="time"], .editor-fields input, .editor-fields select, .confirm-totp input, .activity-filters select { border-color: #425762; background: #111c23; color: var(--ink); }
+  .login-panel input::placeholder, .editor-fields input::placeholder { color: #718691; }
+  .button.quiet { border-color: #3d535e; background: rgba(23, 35, 43, .82); color: #c9d8df; }
+  .button.quiet:hover:not(:disabled) { border-color: #5c7b89; background: #22343e; }
+  .button.secondary { border-color: #3f6f8d; background: #16384d; color: #8dcef5; }
+  .button.secondary:hover:not(:disabled) { background: #1c4963; }
+  .banner { border-color: #315d78; background: #16384d; color: #a9dbfa; }
+  .banner.error { border-color: #75423e; background: #452522; color: #ffb2ab; }
+  .fleet-panel, .traffic-band, .control-panel, .policy-panel, .schedule-panel, .management-row, .activity-row { background: rgba(23, 35, 43, .92); }
+  .fleet-heading, .target-header, .schedule-footer { border-color: var(--line); }
+  .target-row:hover { background: #1d303a; }
+  .target-row.selected { border-color: #3f718d; background: linear-gradient(90deg, #16384d, #1b2d38); }
+  .status-dot { border-color: #26363e; }
+  .status-dot.running { border-color: #153c31; }
+  .status-dot.stopped, .status-dot.error { border-color: #452522; }
+  .status-dot.starting { border-color: #16384d; }
+  .status-dot.stopping { border-color: #49391f; }
+  .traffic-band { border-color: #355565; background: linear-gradient(135deg, #17232b 0%, #142b37 100%); }
+  .progress-track { background: #263840; }
+  .power-button { border-color: #334953; background: #142027; }
+  .power-button.start:hover:not(:disabled) { border-color: #3d8f70; background: #153c31; color: #82e0b6; }
+  .power-button.stop:hover:not(:disabled) { border-color: #a45d58; background: #452522; color: #ffaaa3; }
+  .switch-track { background: #52636b; }
+  .policy-list > div { border-color: #273941; }
+  .schedule-bulk { border-color: #355565; background: linear-gradient(135deg, #16384d, #172a34); }
+  .schedule-table { border-color: var(--line); }
+  .schedule-table-head { background: #20323b; }
+  .schedule-day-row { border-color: var(--line); }
+  .activity-row:hover { border-color: #517386; }
+  .activity-row.failed { border-color: #75423e; background: linear-gradient(100deg, #2a1c1b, rgba(23, 35, 43, .9)); }
+  .activity-source { background: #26363e; color: #b6c6cd; }
+  .activity-source.traffic { background: #16384d; color: #93d2f6; }
+  .activity-source.schedule { background: #342851; color: #cfb5ff; }
+  .activity-source.manual { background: #49391f; color: #f1c67d; }
+  .activity-source.config { background: #26363e; color: #b6c6cd; }
+  .activity-result { color: #b2c1c8; }
+  .activity-outcome.skipped { background: #26363e; color: #b6c6cd; }
+  .activity-outcome.unknown { background: #49391f; color: #f1c67d; }
+  .activity-empty { border-color: #425762; }
+  .confirm-dialog, .editor-dialog { border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .confirm-dialog::backdrop, .editor-dialog::backdrop { background: rgba(0, 0, 0, .72); }
+  .editor-fields input:disabled { background: #202f37; color: #8498a2; }
+  .empty-state { color: var(--muted); }
+  .management-section, .management-heading { border-color: var(--line); }
 }
