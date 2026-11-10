@@ -97,6 +97,16 @@ class ConfigTests(unittest.TestCase):
         finally:
             temporary.cleanup()
 
+    def test_accepts_fixed_utc_offset_schedule_timezone(self):
+        payload = self.base_payload()
+        payload["instances"][0]["schedule"] = {"timezone": "UTC+08:00"}
+        temporary, path = self.write_config(payload)
+        try:
+            _, targets = load_targets_file(path)
+            self.assertEqual(targets["hk-one"].schedule_timezone_default, "UTC+08:00")
+        finally:
+            temporary.cleanup()
+
     def test_allows_schedule_and_traffic_policy_enabled_together(self):
         payload = self.base_payload()
         payload["instances"][0]["auto_enabled_default"] = True

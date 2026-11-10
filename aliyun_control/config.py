@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover - exercised on Python 3.8 deployments
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TIME_PATTERN = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+UTC_OFFSET_PATTERN = re.compile(r"^UTC([+-])(0[0-9]|1[0-4]):([0-5][0-9])$")
 
 
 def _required_env(name: str) -> str:
@@ -75,6 +76,12 @@ def _weekdays(value: object, field: str) -> Tuple[int, ...]:
 
 def _timezone_value(value: object, field: str) -> str:
     name = _nonempty(value, field)
+    match = UTC_OFFSET_PATTERN.fullmatch(name)
+    if match:
+        hours, minutes = int(match.group(2)), int(match.group(3))
+        if hours == 14 and minutes:
+            raise ValueError(f"{field} UTC offset must not exceed 14 hours")
+        return name
     try:
         ZoneInfo(name)
     except ZoneInfoNotFoundError as exc:
@@ -128,6 +135,9 @@ class Config:
     managed_config_path: Optional[Path] = None
     credential_key_path: Optional[Path] = None
     audit_path: Optional[Path] = None
+    passkey_path: Optional[Path] = None
+    passkey_rp_id: str = "ali.hkz.241214.top"
+    passkey_origin: str = "https://ali.hkz.241214.top"
 
     @classmethod
     def from_env(cls, require_web_token: bool = True) -> "Config":
@@ -168,6 +178,9 @@ class Config:
             managed_config_path=managed_config_path,
             credential_key_path=credential_key_path,
             audit_path=Path(os.getenv("AUDIT_PATH", "/var/lib/aliyun-ecs-control/audit.log")),
+            passkey_path=Path(os.getenv("PASSKEY_PATH", "/var/lib/aliyun-ecs-control/passkeys.json")),
+            passkey_rp_id=os.getenv("PASSKEY_RP_ID", "ali.hkz.241214.top").strip(),
+            passkey_origin=os.getenv("PASSKEY_ORIGIN", "https://ali.hkz.241214.top").strip(),
         )
 
 

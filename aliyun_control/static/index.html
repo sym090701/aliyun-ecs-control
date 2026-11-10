@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <title>ECS Fleet Control</title>
   <link rel="stylesheet" href="/app.css">
 </head>
@@ -13,13 +13,12 @@
       <div class="brand-mark" aria-hidden="true">EC</div>
       <h1>ECS Fleet</h1>
       <p>阿里云实例控制台</p>
-      <label for="token">控制令牌</label>
-      <input id="token" name="token" type="password" minlength="24" required autofocus>
-      <div id="totp-field" hidden>
-        <label for="totp">动态验证码</label>
-        <input id="totp" name="totp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code">
+      <label for="totp">动态验证码</label>
+      <input id="totp" name="totp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required autofocus>
+      <div class="login-actions">
+        <button class="button primary wide" type="submit">使用动态验证码登录</button>
+        <button id="passkey-login" class="button secondary wide" type="button">使用 Passkey 登录</button>
       </div>
-      <button class="button primary wide" type="submit">登录</button>
       <div id="login-error" class="form-error" role="alert"></div>
     </form>
   </main>
@@ -145,33 +144,76 @@
             </label>
           </div>
 
-          <div class="schedule-fields">
-            <label>
-              <span>启动时间</span>
-              <input id="schedule-start" type="time" required>
-            </label>
-            <label>
-              <span>停止时间</span>
-              <input id="schedule-stop" type="time" required>
-            </label>
-            <label>
-              <span>时区</span>
-              <input id="schedule-timezone" type="text" list="timezone-options" maxlength="64" required>
+          <div class="schedule-toolbar">
+            <label><span>固定 UTC 偏移</span>
+              <select id="schedule-timezone" required>
+                <option value="UTC-12:00">UTC-12:00</option>
+                <option value="UTC-11:00">UTC-11:00</option>
+                <option value="UTC-10:00">UTC-10:00</option>
+                <option value="UTC-09:00">UTC-09:00</option>
+                <option value="UTC-08:00">UTC-08:00</option>
+                <option value="UTC-07:00">UTC-07:00</option>
+                <option value="UTC-06:00">UTC-06:00</option>
+                <option value="UTC-05:00">UTC-05:00</option>
+                <option value="UTC-04:00">UTC-04:00</option>
+                <option value="UTC-03:30">UTC-03:30</option>
+                <option value="UTC-03:00">UTC-03:00</option>
+                <option value="UTC-02:00">UTC-02:00</option>
+                <option value="UTC-01:00">UTC-01:00</option>
+                <option value="UTC+00:00">UTC+00:00</option>
+                <option value="UTC+01:00">UTC+01:00</option>
+                <option value="UTC+02:00">UTC+02:00</option>
+                <option value="UTC+03:00">UTC+03:00</option>
+                <option value="UTC+03:30">UTC+03:30</option>
+                <option value="UTC+04:00">UTC+04:00</option>
+                <option value="UTC+04:30">UTC+04:30</option>
+                <option value="UTC+05:00">UTC+05:00</option>
+                <option value="UTC+05:30">UTC+05:30</option>
+                <option value="UTC+05:45">UTC+05:45</option>
+                <option value="UTC+06:00">UTC+06:00</option>
+                <option value="UTC+06:30">UTC+06:30</option>
+                <option value="UTC+07:00">UTC+07:00</option>
+                <option value="UTC+08:00" selected>UTC+08:00</option>
+                <option value="UTC+08:45">UTC+08:45</option>
+                <option value="UTC+09:00">UTC+09:00</option>
+                <option value="UTC+09:30">UTC+09:30</option>
+                <option value="UTC+10:00">UTC+10:00</option>
+                <option value="UTC+10:30">UTC+10:30</option>
+                <option value="UTC+11:00">UTC+11:00</option>
+                <option value="UTC+12:00">UTC+12:00</option>
+                <option value="UTC+12:45">UTC+12:45</option>
+                <option value="UTC+13:00">UTC+13:00</option>
+                <option value="UTC+14:00">UTC+14:00</option>
+              </select>
             </label>
           </div>
-
-          <fieldset class="weekday-fieldset">
-            <legend>执行日期</legend>
-            <div class="weekday-options">
-              <label><input type="checkbox" name="schedule-weekday" value="0"><span>周一</span></label>
-              <label><input type="checkbox" name="schedule-weekday" value="1"><span>周二</span></label>
-              <label><input type="checkbox" name="schedule-weekday" value="2"><span>周三</span></label>
-              <label><input type="checkbox" name="schedule-weekday" value="3"><span>周四</span></label>
-              <label><input type="checkbox" name="schedule-weekday" value="4"><span>周五</span></label>
-              <label><input type="checkbox" name="schedule-weekday" value="5"><span>周六</span></label>
-              <label><input type="checkbox" name="schedule-weekday" value="6"><span>周日</span></label>
+          <section class="schedule-bulk" aria-labelledby="schedule-bulk-heading">
+            <div>
+              <p class="section-label">批量修改</p>
+              <h4 id="schedule-bulk-heading">选择日期后统一调整时间</h4>
             </div>
-          </fieldset>
+            <div class="schedule-bulk-actions" aria-label="选择批量修改的日期">
+              <button class="button quiet" type="button" data-schedule-select="all">全选</button>
+              <button class="button quiet" type="button" data-schedule-select="weekdays">工作日</button>
+              <button class="button quiet" type="button" data-schedule-select="weekend">周末</button>
+              <button class="button quiet" type="button" data-schedule-select="none">清除</button>
+            </div>
+            <div class="schedule-bulk-fields">
+              <label><span>开机</span><input id="schedule-bulk-start" type="time" value="08:00" required></label>
+              <label><span>关机</span><input id="schedule-bulk-stop" type="time" value="23:00" required></label>
+              <button id="schedule-bulk-apply" class="button secondary" type="button">应用到选中日期</button>
+            </div>
+          </section>
+          <div class="schedule-table" role="table" aria-label="每周开关机计划">
+            <div class="schedule-table-head" role="row">
+              <span role="columnheader">选择</span>
+              <span role="columnheader">日期</span>
+              <span role="columnheader">启用</span>
+              <span role="columnheader">开机</span>
+              <span role="columnheader">关机</span>
+            </div>
+            <div id="schedule-days" class="schedule-days" role="rowgroup"></div>
+          </div>
 
           <div class="schedule-footer">
             <div>
@@ -182,24 +224,18 @@
           </div>
         </form>
 
-        <datalist id="timezone-options">
-          <option value="Asia/Shanghai"></option>
-          <option value="Asia/Hong_Kong"></option>
-          <option value="Asia/Singapore"></option>
-          <option value="Asia/Tokyo"></option>
-          <option value="Europe/London"></option>
-          <option value="America/Los_Angeles"></option>
-          <option value="UTC"></option>
-        </datalist>
-
         <section class="activity" aria-labelledby="activity-heading">
-          <div>
-            <p class="section-label">最近活动</p>
-            <h3 id="activity-heading">策略记录</h3>
+          <div class="activity-heading">
+            <div><p class="section-label">最近五天</p><h3 id="activity-heading">策略记录</h3></div>
+            <div class="activity-filters">
+              <label><span>来源</span><select id="activity-source-filter"><option value="all">全部</option><option value="traffic">流量守护</option><option value="schedule">开关机计划</option><option value="manual">手动操作</option><option value="config">配置变更</option></select></label>
+              <label><span>结果</span><select id="activity-outcome-filter"><option value="all">全部结果</option><option value="success">成功</option><option value="skipped">未执行</option><option value="failed">失败</option></select></label>
+            </div>
           </div>
-          <div class="activity-row">
-            <span id="last-action">暂无操作</span>
-            <time id="last-action-time"></time>
+          <ol id="activity-list" class="activity-list" aria-live="polite"></ol>
+          <div class="activity-footer">
+            <span id="activity-meta" class="activity-meta"></span>
+            <button id="activity-more" class="button quiet" type="button" hidden>加载更多</button>
           </div>
         </section>
       </section>
@@ -234,6 +270,18 @@
           <button id="instance-add" class="button primary" type="button">添加实例</button>
         </div>
         <div id="instance-list" class="management-list"></div>
+      </section>
+
+      <section class="management-section" aria-labelledby="passkeys-heading">
+        <div class="management-section-heading">
+          <div>
+            <p class="section-label">登录方式</p>
+            <h3 id="passkeys-heading">Passkey</h3>
+          </div>
+          <button id="passkey-add" class="button primary" type="button">添加 Passkey</button>
+        </div>
+        <p class="management-hint">添加和撤销 Passkey 需要当前动态验证码。建议至少保留两个不同设备的 Passkey。</p>
+        <div id="passkey-list" class="management-list"></div>
       </section>
     </section>
   </main>

@@ -2,7 +2,7 @@ import json
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -115,6 +115,48 @@ class FleetTests(unittest.TestCase):
         result = self.fleet(cn=client).controller("cn-one").check_policy(force=True)
         self.assertEqual(result["decision"], "stop")
         self.assertIn("StopInstances", client.calls)
+
+    def test_activity_history_records_success_and_keeps_recent_entries(self):
+        client = FakeClient(status="Stopped", traffic_gb=100)
+        controller = self.fleet(cn=client).controller("cn-one")
+        controller.start()
+        for _ in range(105):
+            controller.set_auto(True)
+        history = controller.state.target(controller.target)["activity_history"]
+        self.assertEqual(len(history), 106)
+        self.assertEqual(history[-1]["action"], "auto_enabled")
+        self.assertEqual(history[-1]["outcome"], "success")
+        self.assertEqual(history[0]["outcome"], "success")
+
+    def test_activity_history_discards_entries_older_than_five_days(self):
+        controller = self.fleet().controller("cn-one")
+        old = (datetime.now(timezone.utc) - timedelta(days=6)).isoformat(timespec="seconds")
+        recent = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat(timespec="seconds")
+        controller.state.update_target(
+            controller.target,
+            activity_history=[
+                {"at": old, "action": "traffic_start", "result": "old", "outcome": "success"},
+                {"at": recent, "action": "schedule_stop", "result": "recent", "outcome": "success"},
+            ],
+        )
+        controller.set_auto(True)
+        history = controller.state.target(controller.target)["activity_history"]
+        self.assertEqual([item["result"] for item in history], ["recent", "Automatic traffic policy enabled"])
+
+    def test_activity_history_filters_and_paginates_by_policy_source(self):
+        controller = self.fleet().controller("cn-one")
+        controller.set_auto(True)
+        controller.set_auto(False)
+        controller.set_schedule(False, days=[
+            {"weekday": day, "enabled": False, "start": "08:00", "stop": "23:00"}
+            for day in range(7)
+        ], timezone_name="UTC")
+        controller.start()
+        traffic = controller.activity_history(source="traffic", limit=10)
+        config = controller.activity_history(source="config", outcome="success", offset=0, limit=1)
+        self.assertEqual(traffic["items"], [])
+        self.assertEqual(len(config["items"]), 1)
+        self.assertTrue(config["has_more"])
 
     def test_auto_state_is_isolated_between_targets(self):
         fleet = self.fleet()
@@ -293,6 +335,9 @@ class FleetTests(unittest.TestCase):
         result = controller.check_automation(now=datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc))
         self.assertTrue(result["skipped"])
         self.assertEqual(client.calls, ["ListCdtInternetTraffic"])
+        history = controller.state.target(controller.target)["activity_history"]
+        self.assertEqual(history[-1]["action"], "traffic_check")
+        self.assertEqual(history[-1]["outcome"], "failed")
 
     def test_overnight_window_uses_start_weekday(self):
         controller = self.fleet().controller("cn-one")
@@ -301,6 +346,39 @@ class FleetTests(unittest.TestCase):
         self.assertFalse(controller.schedule_window_active(now=datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc)))
         event = controller.next_schedule_event(now=datetime(2026, 8, 4, 7, 0, tzinfo=timezone.utc))
         self.assertEqual(event, {"at": "2026-08-04T08:00+00:00", "action": "stop"})
+
+    def test_daily_schedule_can_use_distinct_times_and_cross_midnight(self):
+        controller = self.fleet().controller("cn-one")
+        days = [
+            {"weekday": day, "enabled": False, "start": "08:00", "stop": "18:00"}
+            for day in range(7)
+        ]
+        days[0] = {"weekday": 0, "enabled": True, "start": "08:00", "stop": "17:00"}
+        days[1] = {"weekday": 1, "enabled": True, "start": "22:00", "stop": "06:00"}
+        controller.set_schedule(True, days=days, timezone_name="UTC")
+        state = controller.state.target(controller.target)
+        self.assertEqual(state["schedule_days"][0]["start"], "08:00")
+        self.assertEqual(state["schedule_days"][1]["start"], "22:00")
+        self.assertTrue(controller.schedule_window_active(now=datetime(2026, 8, 4, 23, 0, tzinfo=timezone.utc)))
+        self.assertTrue(controller.schedule_window_active(now=datetime(2026, 8, 5, 5, 0, tzinfo=timezone.utc)))
+        self.assertFalse(controller.schedule_window_active(now=datetime(2026, 8, 5, 6, 0, tzinfo=timezone.utc)))
+
+    def test_daily_schedule_accepts_fixed_utc_offset(self):
+        controller = self.fleet().controller("cn-one")
+        controller.set_schedule(True, "08:00", "17:00", [0], "UTC+08:00")
+        self.assertTrue(controller.schedule_window_active(now=datetime(2026, 8, 3, 0, 30, tzinfo=timezone.utc)))
+        self.assertFalse(controller.schedule_window_active(now=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc)))
+
+    def test_paused_empty_daily_schedule_can_be_read_back(self):
+        controller = self.fleet().controller("cn-one")
+        days = [
+            {"weekday": day, "enabled": False, "start": "08:00", "stop": "23:00"}
+            for day in range(7)
+        ]
+        controller.set_schedule(False, days=days, timezone_name="UTC")
+        state = controller.state.target(controller.target)
+        self.assertEqual(state["schedule_weekdays"], [])
+        self.assertFalse(any(row["enabled"] for row in state["schedule_days"]))
 
     def test_schedule_rejects_invalid_values(self):
         controller = self.fleet().controller("cn-one")

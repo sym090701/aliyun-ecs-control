@@ -25,7 +25,7 @@ class FakeController:
     def set_auto(self, enabled):
         return {"target_id": self.target_id, "auto_enabled": enabled}
 
-    def set_schedule(self, enabled, start_time, stop_time, weekdays, timezone_name):
+    def set_schedule(self, enabled, start_time=None, stop_time=None, weekdays=None, timezone_name=None, days=None):
         if timezone_name == "Mars/Olympus":
             raise ValueError("Unknown schedule timezone: Mars/Olympus")
         return {
@@ -35,7 +35,15 @@ class FakeController:
             "schedule_stop": stop_time,
             "schedule_weekdays": weekdays,
             "schedule_timezone": timezone_name,
+            "schedule_days": days,
         }
+
+    def activity_history(self, source="all", outcome="all", offset=0, limit=50):
+        items = [
+            {"at": "2026-08-13T00:00:00+00:00", "action": "traffic_start", "result": "Start request accepted", "outcome": "success"},
+            {"at": "2026-08-12T00:00:00+00:00", "action": "schedule_stop", "result": "Graceful stop request accepted", "outcome": "success"},
+        ]
+        return {"items": items[offset:offset + limit], "offset": offset, "limit": limit, "has_more": False}
 
     def check_policy(self, force=False):
         return {"target_id": self.target_id, "skipped": False, "forced": force}
@@ -110,7 +118,7 @@ class ServerTests(unittest.TestCase):
             accounts={"cn": AccountConfig("cn", "阿里云内地", "test-id", "test-secret")},
             targets={"cn-one": TargetConfig("cn-one", "北京主机", "cn", "cn-beijing", "i-test", 180)},
             control_token="test-control-token-1234567890",
-            totp_secret="",
+            totp_secret=pyotp.random_base32(),
             listen_host="127.0.0.1",
             listen_port=0,
             state_path=root / "state.json",
@@ -155,10 +163,8 @@ class ServerTests(unittest.TestCase):
         connection.close()
         return response.status, data, response_headers
 
-    def login_cookie(self, token=None, totp=None):
-        body = {"token": token or self.config.control_token}
-        if totp is not None:
-            body["totp"] = totp
+    def login_cookie(self, totp=None):
+        body = {"totp": totp or pyotp.TOTP(self.config.totp_secret).now()}
         status, _, headers = self.request("POST", "/api/login", body)
         self.assertEqual(status, 200)
         return headers["Set-Cookie"].split(";", 1)[0]
@@ -187,17 +193,6 @@ class ServerTests(unittest.TestCase):
     def test_configuration_requires_authentication(self):
         status, _, _ = self.request("GET", "/api/configuration")
         self.assertEqual(status, 401)
-
-    def test_management_requires_totp_to_be_configured(self):
-        cookie = self.login_cookie()
-        status, data, _ = self.request(
-            "POST",
-            "/api/accounts",
-            {"id": "new", "name": "New", "access_key_id": "test-id", "access_key_secret": "test-secret"},
-            self.write_headers(cookie),
-        )
-        self.assertEqual(status, 403)
-        self.assertIn("TOTP", data["error"])
 
     def test_account_management_requires_current_totp_and_strips_code(self):
         secret = pyotp.random_base32()
@@ -241,25 +236,28 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(deleted, 200)
         self.assertEqual(self.fleet.last_management_call, ("delete_target", "hk-two"))
 
-    def test_totp_is_required_when_configured(self):
-        secret = pyotp.random_base32()
-        self.config = Config(**{**self.config.__dict__, "totp_secret": secret})
-        self._restart_server()
-        denied, _, _ = self.request("POST", "/api/login", {"token": self.config.control_token})
+    def test_login_requires_only_current_totp(self):
+        denied, _, _ = self.request("POST", "/api/login", {})
         accepted, _, _ = self.request(
             "POST",
             "/api/login",
-            {"token": self.config.control_token, "totp": pyotp.TOTP(secret).now()},
+            {"totp": pyotp.TOTP(self.config.totp_secret).now()},
         )
         self.assertEqual(denied, 401)
         self.assertEqual(accepted, 200)
 
+    def test_bearer_token_cannot_bypass_totp_login(self):
+        status, _, _ = self.request(
+            "GET",
+            "/api/overview",
+            headers={"Authorization": f"Bearer {self.config.control_token}", "X-TOTP": pyotp.TOTP(self.config.totp_secret).now()},
+        )
+        self.assertEqual(status, 401)
+
     def test_secure_cookie_and_hsts_for_https_proxy_mode(self):
         self.config = Config(**{**self.config.__dict__, "cookie_secure": True})
         self._restart_server()
-        status, _, headers = self.request(
-            "POST", "/api/login", {"token": self.config.control_token}
-        )
+        status, _, headers = self.request("POST", "/api/login", {"totp": pyotp.TOTP(self.config.totp_secret).now()})
         self.assertEqual(status, 200)
         self.assertIn("Secure", headers["Set-Cookie"])
         self.assertIn("max-age=31536000", headers["Strict-Transport-Security"])
@@ -328,6 +326,33 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data["data"]["target_id"], "intl-one")
         self.assertEqual(data["data"]["schedule_start"], "09:15")
+
+    def test_schedule_route_accepts_independent_daily_times(self):
+        cookie = self.login_cookie()
+        days = [
+            {"weekday": day, "enabled": day < 2, "start": "08:00" if day == 0 else "10:30", "stop": "18:00" if day == 0 else "20:15"}
+            for day in range(7)
+        ]
+        status, data, _ = self.request(
+            "POST",
+            "/api/targets/intl-one/schedule",
+            {"enabled": True, "days": days, "timezone": "Asia/Hong_Kong"},
+            self.write_headers(cookie),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["data"]["schedule_days"], days)
+
+    def test_activity_route_requires_authentication_and_returns_page(self):
+        denied, _, _ = self.request("GET", "/api/targets/cn-one/activity")
+        cookie = self.login_cookie()
+        accepted, data, _ = self.request(
+            "GET", "/api/targets/cn-one/activity?source=traffic&outcome=success&offset=0&limit=1",
+            headers={"Cookie": cookie},
+        )
+        self.assertEqual(denied, 401)
+        self.assertEqual(accepted, 200)
+        self.assertEqual(len(data["data"]["items"]), 1)
+        self.assertEqual(data["data"]["limit"], 1)
 
     def test_schedule_requires_boolean_enabled(self):
         cookie = self.login_cookie()
